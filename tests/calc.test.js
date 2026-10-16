@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync, existsSync } from 'node:fs';
-import { calculate } from '../src/calc.js';
+import { readFileSync } from 'node:fs';
+import { calculate, summaryRows, SUMMARY_DEPARTMENTS } from '../src/calc.js';
 
 const load = (p) => JSON.parse(readFileSync(new URL(p, import.meta.url)));
 const inputs = load('../data/inputs.json');
@@ -32,13 +32,47 @@ test('new-customer phasing matches year-end target', () => {
   assert.equal(calculate(inputs, roles).derived.newCustomersVsTarget, 0);
 });
 
-// Golden file: every Summary line and role, ±€0.01. Runs once tests/expected_v5.json is supplied.
-const goldenPath = new URL('./expected_v5.json', import.meta.url);
-test('golden v5 results', { skip: !existsSync(goldenPath) && 'tests/expected_v5.json missing' }, () => {
-  const golden = JSON.parse(readFileSync(goldenPath));
-  const res = calculate(inputs, roles);
-  // Shape to be wired once the file's structure is known.
-  assert.ok(golden && res);
+// Golden file: every Summary row and role, within golden.tolerance.
+const golden = load('./expected_v5.json');
+const departments = load('../data/personnel.json').departments;
+const rowId = (k) => k.match(/^(r\d+) /)[1];
+const rows = () => summaryRows(calculate(inputs, roles, departments));
+
+test('summaryRows returns exactly the golden rows, in order', () => {
+  assert.deepEqual(rows().map((r) => r.row), Object.keys(golden.summaryLines).map(rowId));
+});
+
+test('golden v5 Summary rows', () => {
+  const byId = Object.fromEntries(rows().map((r) => [r.row, r]));
+  const tol = golden.tolerance;
+  for (const [key, g] of Object.entries(golden.summaryLines)) {
+    const r = byId[rowId(key)];
+    assert.ok(r, `${key}: row missing`);
+    g.monthly.forEach((v, m) => assert.ok(Math.abs(r.monthly[m] - v) <= tol, `${key} m${m + 1}: got ${r.monthly[m]}, expected ${v}`));
+    assert.ok(Math.abs(r.total - g.total2027) <= tol, `${key} total: got ${r.total}, expected ${g.total2027}`);
+    if (g.bucket) assert.equal(r.bucket, g.bucket, `${key} bucket`);
+    if (g.fixedVariable) assert.equal(r.fv, g.fixedVariable, `${key} fv`);
+  }
+});
+
+test('golden v5 personnel by role', () => {
+  const res = calculate(inputs, roles, departments);
+  for (const [id, g] of Object.entries(golden.personnelByRole)) {
+    const p = res.personnel.roles.find((x) => x.id === id);
+    assert.ok(p, `${id}: role missing`);
+    g.fte.forEach((v, m) => assert.ok(Math.abs(p.fte.monthly[m] - v) <= 0.0001, `${id} fte m${m + 1}: got ${p.fte.monthly[m]}, expected ${v}`));
+    g.cost.forEach((v, m) => near(p.cost.monthly[m], v, `${id} cost m${m + 1}`));
+    near(p.cost.total, g.total2027, `${id} total`);
+  }
+});
+
+// Review Focus #3: a department without roles stays on the Summary at 0 and totals stay balanced.
+test('department with no roles keeps its row at zero and totals balanced', () => {
+  const res = calculate(inputs, roles.filter((x) => x.department !== 'Billing & Invoicing'), SUMMARY_DEPARTMENTS);
+  const byId = Object.fromEntries(summaryRows(res).map((r) => [r.row, r]));
+  assert.ok(byId.r41, 'r41 exists');
+  assert.deepEqual(byId.r41.monthly, Array(12).fill(0));
+  for (let m = 0; m < 12; m++) near(byId.r47.monthly[m] - (byId.r50.monthly[m] + byId.r51.monthly[m]), 0, `balance m${m + 1}`);
 });
 
 // Edge cases (SPEC §7.2)
@@ -61,10 +95,11 @@ test('all-zero inputs give finite numbers and 0 CTS per POD', () => {
   assert.equal(res.unitEconomics.ctsAverage.monthly[11], 0);
 });
 
-test('end date before start gives zero role cost', () => {
-  const role = { id: 'X', department: 'Customer Service', start: '2027-06-01', end: '2027-03-31', fte: 1, quarterlyCostAt1Fte: 30000, oneOffHiringFee: 0 };
+test('end date before start: no salary, hiring fee still booked (Excel)', () => {
+  const role = { id: 'X', department: 'Customer Service', start: '2027-06-01', end: '2027-03-31', fte: 1, quarterlyCostAt1Fte: 30000, oneOffHiringFee: 500 };
   const p = calculate(inputs, [role]).personnel.roles[0];
-  assert.equal(p.cost.total, 0);
+  assert.equal(p.cost.total, 500);
+  assert.equal(p.cost.monthly[5], 500); // June, the start month
 });
 
 test('hiring fee booked only when start falls in 2027', () => {

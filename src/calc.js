@@ -187,10 +187,59 @@ export function calculate(inputs, roles = [], departments) {
   const keyFigures = {
     newCustomers: { monthly: nc, total: sum(nc) },
     activeCustomers: { monthly: active, total: active[M - 1] },
-    pods: { monthly: pods, total: pods[M - 1] },
+    pods: { monthly: pods, total: sum(pods) / M }, // Summary r64 total = average (Calculations sheet shows December)
     payments: { monthly: pay, total: sum(pay) },
     fte: { monthly: fteMonthly, total: sum(fteMonthly) / M },
   };
 
   return { derived: d, errors, lines, aggregates, unitEconomics, keyFigures, personnel: { roles: roleResults } };
+}
+
+// ---- Summary row model (Excel Summary sheet; single source for the table and the export) ----
+export const SUMMARY_DEPARTMENTS = ['Operations & Service', 'Billing & Invoicing', 'Customer Service', 'Pricing & Risk Management', 'Switching & Metering'];
+
+const LINE_ROWS = [
+  ['r06', 'sepaCommissions'], ['r07', 'cardCommissions'], ['r08', 'retryFees'], ['r09', 'stripeBilling'], ['r10', 'payments'],
+  ['r13', 'paperPrinting'], ['r14', 'paperPostage'], ['r15', 'sms'], ['r16', 'comms'],
+  ['r19', 'costOfContact'], ['r20', 'aiCalls'], ['r21', 'inboundHuman'], ['r22', 'recordings'], ['r23', 'outbound'], ['r24', 'disputes'], ['r25', 'service'],
+  ['r28', 'csLicences'], ['r29', 'phoneNumbers'], ['r30', 'csPlatform'],
+  ['r33', 'haulogyPod'], ['r34', 'haulogyFixed'], ['r35', 'pricingConnector'], ['r36', 'equifax'], ['r37', 'platforms'],
+];
+const SUBTOTAL_ROWS = new Set(['r10', 'r16', 'r25', 'r30', 'r37']);
+
+export function summaryRows(result) {
+  const { lines, aggregates: a, unitEconomics: u, keyFigures: k } = result;
+  const byId = Object.fromEntries(lines.map((l) => [l.id, l]));
+  const zero = Array(M).fill(0);
+  const row = (r, kind, label, x, format = 'eur', extra = {}) => ({ row: r, kind, label, monthly: x.monthly, total: x.total, format, ...extra });
+  const out = [];
+  for (const [r, id] of LINE_ROWS) {
+    if (SUBTOTAL_ROWS.has(r)) out.push(row(r, 'subtotal', `Subtotal ${BLOCKS.find((b) => b.id === id).label}`, a.subtotals[id]));
+    else { const l = byId[id]; out.push(row(r, 'line', l.label, l, 'eur', { bucket: l.bucket, fv: l.fv })); }
+  }
+  // Departments: fixed Excel order r40-r44 (zero row if no roles), any other department appended after
+  const personnel = lines.filter((l) => l.block === 'personnel');
+  const extras = personnel.filter((l) => !SUMMARY_DEPARTMENTS.includes(l.label));
+  [...SUMMARY_DEPARTMENTS, ...extras.map((l) => l.label)].forEach((dep, i) => {
+    const l = personnel.find((x) => x.label === dep) ?? { monthly: zero, total: 0, bucket: DEPARTMENT_BUCKET[dep] ?? BUCKET.OUT, fv: FV.FIX };
+    out.push(row(i < 5 ? `r${40 + i}` : `dept:${dep}`, 'line', dep, l, 'eur', { bucket: l.bucket, fv: l.fv }));
+  });
+  out.push(row('r45', 'subtotal', 'Subtotal Personnel', a.subtotals.personnel));
+  out.push(row('r47', 'total', 'TOTAL OPERATIONS COST', a.total));
+  out.push(row('r50', 'aggregate', 'Total variable cost', a.variable));
+  out.push(row('r51', 'aggregate', 'Total fixed cost', a.fixed));
+  out.push(row('r55', 'aggregate', 'CTS - Operations', a.ctsOps));
+  out.push(row('r56', 'aggregate', 'CTS - Customer care', a.ctsCare));
+  out.push(row('r57', 'aggregate', 'Total cost to serve (CTS)', a.cts));
+  out.push(row('r58', 'aggregate', 'of which variable CTS', a.ctsVariable));
+  out.push(row('r59', 'aggregate', 'Outside CTS (Pricing & Risk Management, pricing connector)', a.outside));
+  out.push(row('r63', 'keyFigure', 'New customers', k.newCustomers, 'count'));
+  out.push(row('r64', 'keyFigure', 'Active PODs (month) / average active PODs (total)', k.pods, 'count'));
+  out.push(row('r65', 'keyFigure', 'Total payments', k.payments, 'count'));
+  out.push(row('r66', 'keyFigure', 'Personnel FTE (total = average)', k.fte, 'fte'));
+  out.push(row('r69', 'unitEconomics', 'CTS per POD per year - average', u.ctsAverage, 'eurPerPod'));
+  out.push(row('r70', 'unitEconomics', 'of which Operations', u.ctsOps, 'eurPerPod'));
+  out.push(row('r71', 'unitEconomics', 'of which Customer care', u.ctsCare, 'eurPerPod'));
+  out.push(row('r72', 'unitEconomics', 'CTS per POD per year - marginal (variable only)', u.ctsMarginal, 'eurPerPod'));
+  return out;
 }

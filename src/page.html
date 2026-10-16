@@ -1,0 +1,54 @@
+<title>Operations Cost Plan 2027</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<meta name="description" content="MET Retail's 2027 Operations Cost Plan: inputs, personnel and the monthly cost summary, shared with the team.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;500;600;700&display=swap">
+<style>/*@STYLES@*/</style>
+
+<header class="masthead">
+  <div class="wrap masthead-row">
+    <div class="brand">
+      <img class="logo logo-on-light" src="@LOGO_BLUE@" alt="MET" width="64" height="64">
+      <img class="logo logo-on-dark" src="@LOGO_WHITE@" alt="MET" width="64" height="64">
+      <div class="titles">
+        <p class="eyebrow">MET Retail · Operations</p>
+        <h1>Operations Cost Plan 2027</h1>
+      </div>
+    </div>
+    <div class="actions">
+      <div class="status" role="status" aria-live="polite">
+        <span id="badge-view-only" class="badge">View only</span>
+        <span id="save-status" class="save-status" hidden></span>
+      </div>
+      <button id="download-excel" class="btn" type="button" hidden disabled>Download Excel</button>
+    </div>
+  </div>
+  <div class="wrap">
+    <div class="tablist" role="tablist" aria-label="Plan sections">
+      <button type="button" role="tab" id="tab-summary" aria-controls="panel-summary" aria-selected="true">Summary</button>
+      <button type="button" role="tab" id="tab-inputs" aria-controls="panel-inputs" aria-selected="false" tabindex="-1">Inputs</button>
+      <button type="button" role="tab" id="tab-personnel" aria-controls="panel-personnel" aria-selected="false" tabindex="-1">Personnel</button>
+      <button type="button" role="tab" id="tab-readme" aria-controls="panel-readme" aria-selected="false" tabindex="-1">Read Me</button>
+    </div>
+  </div>
+</header>
+
+<main class="wrap panels">
+  <section class="panel" role="tabpanel" id="panel-summary" aria-labelledby="tab-summary" tabindex="0">
+    <p class="placeholder">Monthly costs by department, the Fixed/Variable split and unit economics for 2027 appear here.</p>
+  </section>
+  <section class="panel" role="tabpanel" id="panel-inputs" aria-labelledby="tab-inputs" tabindex="0" hidden>
+    <p class="placeholder">Volume, price and share assumptions, plus the monthly new-customer and licence series, appear here.</p>
+  </section>
+  <section class="panel" role="tabpanel" id="panel-personnel" aria-labelledby="tab-personnel" tabindex="0" hidden>
+    <p class="placeholder">Roles by department, with start and end dates, FTE, quarterly cost and hiring fees, appear here.</p>
+  </section>
+  <section class="panel" role="tabpanel" id="panel-readme" aria-labelledby="tab-readme" tabindex="0" hidden>
+    <p class="placeholder">How the plan is calculated and how to edit it appears here.</p>
+  </section>
+</main>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script>/*@SCRIPT@*/</script>

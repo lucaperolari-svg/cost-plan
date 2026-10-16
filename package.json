@@ -3,6 +3,12 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "node --disable-warning=ExperimentalWarning --test tests/*.test.js"
+    "test": "node --disable-warning=ExperimentalWarning --test tests/*.test.js",
+    "build": "node build.mjs",
+    "test:page": "npm run build && node --test tests/page.test.mjs"
+  },
+  "devDependencies": {
+    "esbuild": "0.25.12",
+    "playwright": "1.56.1"
   }
 }

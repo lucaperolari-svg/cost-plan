@@ -1,8 +1,11 @@
 // In-memory test double of the artifact `db` capability. Plain browser-safe ES:
-// no Node imports, only Promise/setTimeout, so page tests can inject it too.
+// no Node imports, only Promise/setTimeout/Date, so page tests can inject it too.
+// Faithful on: own writes visible at once (hasPendingWrites) and reverted if rejected,
+// frozen snapshot data, onSnapshot error callbacks, acquire leases, configurable write delay.
 
 const isObj = (v) => v && typeof v === 'object' && !Array.isArray(v);
 const clone = (v) => JSON.parse(JSON.stringify(v));
+const freeze = (v) => { if (v && typeof v === 'object') { Object.values(v).forEach(freeze); Object.freeze(v); } return v; };
 const merge = (dst, src) => {
   for (const [k, v] of Object.entries(src)) dst[k] = isObj(v) && isObj(dst[k]) ? merge(dst[k], v) : clone(v);
   return dst;
@@ -10,43 +13,54 @@ const merge = (dst, src) => {
 const parent = (path) => path.slice(0, path.lastIndexOf('/'));
 const later = (fn) => Promise.resolve().then(fn);
 
-export function fakeDb() {
-  const docs = new Map(); // path -> body
-  const docSubs = new Set(); // {path, next}
-  const colSubs = new Set(); // {path, next}
+export function fakeDb({ writeDelay = 0 } = {}) {
+  const docs = new Map(); // path -> body (includes this client's unconfirmed writes)
+  const pendingCount = new Map(); // path -> unconfirmed own writes
+  const leases = new Map(); // path -> {holder, expires}
+  const docSubs = new Set(); // {path, next, error, live}
+  const colSubs = new Set();
   const writes = []; // this client's writes: {op, path, data?}
   const remoteWrites = [];
   let failNext = null;
+  let delay = writeDelay;
 
+  const meta = (path) => ({ fromCache: false, hasPendingWrites: (pendingCount.get(path) || 0) > 0 });
   const snap = (path) => {
-    const body = docs.get(path);
-    return { id: path.split('/').pop(), exists: body !== undefined, data: () => (body === undefined ? undefined : clone(body)), metadata: { fromCache: false, hasPendingWrites: false } };
+    const body = docs.has(path) ? freeze(clone(docs.get(path))) : undefined;
+    return { id: path.split('/').pop(), exists: body !== undefined, data: () => body, metadata: meta(path) };
   };
   const colSnap = (path) => {
     const list = [...docs.keys()].filter((p) => parent(p) === path).sort().map(snap);
-    return { docs: list, size: list.length, empty: !list.length, metadata: { fromCache: false, hasPendingWrites: false } };
+    return { docs: list, size: list.length, empty: !list.length, metadata: { fromCache: false, hasPendingWrites: list.some((d) => d.metadata.hasPendingWrites) } };
   };
   const notify = (path) => {
-    for (const s of docSubs) if (s.path === path && s.live) later(() => s.live && s.next(snap(path)));
-    for (const s of colSubs) if (s.path === parent(path) && s.live) later(() => s.live && s.next(colSnap(s.path)));
+    for (const s of docSubs) if (s.path === path) later(() => s.live && s.next(snap(path)));
+    for (const s of colSubs) if (s.path === parent(path)) later(() => s.live && s.next(colSnap(s.path)));
   };
   const apply = (op, path, data) => {
     if (op === 'set') docs.set(path, clone(data));
-    else if (op === 'update') {
-      if (!docs.has(path)) return Promise.reject({ code: 'invalid_argument', message: 'no such document' });
-      merge(docs.get(path), data);
-    } else docs.delete(path);
+    else if (op === 'update') merge(docs.get(path), data);
+    else docs.delete(path);
     notify(path);
   };
+  const bump = (path, n) => pendingCount.set(path, (pendingCount.get(path) || 0) + n);
   const write = (op, path, data) => {
     writes.push(data === undefined ? { op, path } : { op, path, data: clone(data) });
-    return later(() => {
-      if (failNext) { const f = failNext; failNext = null; return Promise.reject({ code: f, message: f }); }
-      return apply(op, path, data);
+    if (op === 'update' && !docs.has(path)) return later(() => Promise.reject({ code: 'invalid_argument', message: 'no such document' }));
+    const had = docs.has(path), prev = had ? clone(docs.get(path)) : undefined;
+    const fail = failNext; failNext = null;
+    apply(op, path, data); bump(path, 1); // visible at once, unconfirmed
+    return new Promise((resolve, reject) => {
+      const done = () => {
+        bump(path, -1);
+        if (fail) { if (had) docs.set(path, prev); else docs.delete(path); reject({ code: fail, message: fail }); } else resolve();
+        notify(path);
+      };
+      if (delay > 0) setTimeout(done, delay); else later(done);
     });
   };
-  const subscribe = (set, path, view, next) => {
-    const s = { path, next, live: true };
+  const subscribe = (set, path, view, next, error) => {
+    const s = { path, next, error, live: true };
     set.add(s);
     later(() => s.live && next(view(path)));
     return () => { s.live = false; set.delete(s); };
@@ -57,13 +71,21 @@ export function fakeDb() {
     set: (d) => write('set', path, d),
     update: (d) => write('update', path, d),
     delete: () => write('delete', path),
-    onSnapshot: (next) => subscribe(docSubs, path, snap, next),
+    acquire: ({ holder, ttlMs = 30000, data }) => later(() => {
+      const l = leases.get(path), now = Date.now();
+      if (l && l.expires > now && l.holder !== holder) return { acquired: false, expiresAt: new Date(l.expires).toISOString() };
+      const expires = now + Math.min(Math.max(ttlMs, 1000), 600000);
+      leases.set(path, { holder, expires });
+      if (data) { docs.set(path, merge(docs.get(path) || {}, data)); notify(path); }
+      return { acquired: true, holder, expiresAt: new Date(expires).toISOString() };
+    }),
+    onSnapshot: (next, error) => subscribe(docSubs, path, snap, next, error),
   });
   const colRef = (path) => ({
     path,
     doc: (id) => docRef(`${path}/${id}`),
     get: () => later(() => colSnap(path)),
-    onSnapshot: (next) => subscribe(colSubs, path, colSnap, next),
+    onSnapshot: (next, error) => subscribe(colSubs, path, colSnap, next, error),
   });
 
   return {
@@ -72,7 +94,11 @@ export function fakeDb() {
     writes,
     remoteWrites,
     docs, // raw state, for assertions
-    failNext: (code) => { failNext = code; }, // next write rejects with {code}
+    setWriteDelay: (ms) => { delay = ms; },
+    failNext: (code) => { failNext = code; }, // next write is rejected with {code} (and reverted)
+    failSubscriptions: (code) => { // terminate every listener with an error
+      for (const s of [...docSubs, ...colSubs]) { s.live = false; s.error?.({ code, message: code }); }
+    },
     remote: (op, path, data) => { remoteWrites.push({ op, path, data }); return later(() => apply(op, path, data)); }, // write as another client
   };
 }

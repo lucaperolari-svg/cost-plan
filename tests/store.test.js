@@ -223,3 +223,117 @@ test('dispose stops listening', async (t) => {
   await settle();
   assert.notEqual(val(store, 'pricePerSms'), 0.9);
 });
+
+// --- fix round 1: queued batches, failures, seeding race, bad values, faithful fake
+async function drain(n = 12, ms = 300) { for (let i = 0; i < n; i++) { mock.timers.tick(ms); await settle(); } }
+const seeded = async (opts) => { const x = await make(opts); x.store.setScalar('costOfContact', 1); await debounce(); return x; };
+
+test('second batch queued while the first is in flight keeps every monthly edit', async (t) => {
+  t.after(() => mock.timers.reset());
+  const { db, store } = await seeded();
+  db.setWriteDelay(300);
+  store.setMonthly('csLicences', 1, 111); await debounce(); // batch 1 in flight
+  store.setMonthly('csLicences', 2, 222); await debounce(); // batch 2 queued
+  assert.deepEqual(store.getState().inputs.monthly.csLicences.slice(1, 3), [111, 222]);
+  mock.timers.tick(300); await settle(); // batch 1 done, batch 2 running
+  assert.deepEqual(store.getState().inputs.monthly.csLicences.slice(1, 3), [111, 222]);
+  store.setMonthly('csLicences', 3, 333); await debounce();
+  await drain();
+  assert.deepEqual(db.docs.get('plan/inputs').monthly.csLicences.slice(1, 4), [111, 222, 333]);
+  assert.equal(store.getState().status, 'saved');
+});
+
+test('a remote change while a local edit is pending: local survives, other fields update', async (t) => {
+  t.after(() => mock.timers.reset());
+  const { db, store } = await seeded();
+  store.setScalar('aiCallShare', 0.5); // pending, not flushed
+  await db.remote('update', 'plan/inputs', { scalars: { aiCallShare: 0.9, pricePerSms: 0.77 } });
+  await settle();
+  assert.equal(val(store, 'aiCallShare'), 0.5);
+  assert.equal(val(store, 'pricePerSms'), 0.77);
+});
+
+test('two stores seeding an empty db at once: both edits survive, all roles written once', async (t) => {
+  t.after(() => mock.timers.reset());
+  const db = fakeDb();
+  const a = await make({ db, u: user(true, 'u_a') });
+  const b = await make({ db, u: user(true, 'u_b') });
+  a.store.setScalar('aiCallShare', 0.5);
+  b.store.setScalar('pricePerSms', 0.123);
+  await debounce(); await drain(4);
+  const sc = db.docs.get('plan/inputs').scalars;
+  assert.equal(sc.aiCallShare, 0.5);
+  assert.equal(sc.pricePerSms, 0.123);
+  assert.equal([...db.docs.keys()].filter((p) => p.startsWith('roles/')).length, 13);
+  assert.equal(writesTo(db, 'plan/inputs').filter((w) => w.op === 'set').length, 1);
+  assert.equal(val(a.store, 'pricePerSms'), 0.123);
+  assert.equal(val(b.store, 'aiCallShare'), 0.5);
+});
+
+test('a failed write drops only its own batch', async (t) => {
+  t.after(() => mock.timers.reset());
+  const { db, store } = await seeded();
+  db.setWriteDelay(300);
+  db.failNext('resource_exhausted');
+  store.setScalar('aiCallShare', 0.5); await debounce(); // in flight, will fail
+  store.setScalar('costOfContact', 7); // pending, made after the failed batch was taken
+  await debounce(); await drain();
+  const sc = db.docs.get('plan/inputs').scalars;
+  assert.notEqual(sc.aiCallShare, 0.5);
+  assert.equal(sc.costOfContact, 7);
+  assert.equal(val(store, 'costOfContact'), 7);
+  assert.notEqual(val(store, 'aiCallShare'), 0.5);
+  assert.equal(store.getState().readOnly, false);
+});
+
+test('a failed role write does not drop pending input edits', async (t) => {
+  t.after(() => mock.timers.reset());
+  const { db, store } = await seeded();
+  store.setScalar('aiCallShare', 0.5);
+  db.failNext('resource_exhausted');
+  store.upsertRole({ ...seed().roles[0], fte: 0.25 });
+  await settle(); await debounce(); await drain(2);
+  assert.equal(db.docs.get('plan/inputs').scalars.aiCallShare, 0.5);
+});
+
+test('no writes after invalid_argument, including queued and pending edits', async (t) => {
+  t.after(() => mock.timers.reset());
+  const { db, store } = await seeded();
+  db.setWriteDelay(300);
+  db.failNext('invalid_argument');
+  store.setScalar('aiCallShare', 0.5); await debounce();
+  store.setScalar('costOfContact', 7); await debounce(); // queued behind the failing write
+  store.setScalar('pricePerSms', 0.2); // pending
+  const n = db.writes.length;
+  await drain();
+  assert.equal(store.getState().readOnly, true);
+  assert.equal(store.getState().status, 'error');
+  assert.equal(db.writes.length, n);
+  store.setScalar('pricePerSms', 0.3); store.upsertRole(seed().roles[0]); store.deleteRole('R02');
+  await debounce(); await drain(2);
+  assert.equal(db.writes.length, n);
+});
+
+test('onSnapshot error callback: revoked shows an error and read-only', async (t) => {
+  t.after(() => mock.timers.reset());
+  const { db, store } = await seeded();
+  db.failSubscriptions('revoked');
+  assert.equal(store.getState().status, 'error');
+  assert.equal(store.getState().readOnly, true);
+});
+
+test('store is the write boundary: bad values and indexes are rejected', async (t) => {
+  t.after(() => mock.timers.reset());
+  const { db, store } = await seeded();
+  const n = db.writes.length;
+  const before = JSON.stringify(store.getState().inputs);
+  for (const v of [NaN, Infinity, 'abc', '5', undefined, {}]) store.setScalar('pricePerSms', v);
+  store.setMonthly('csLicences', 12, 1); store.setMonthly('csLicences', -1, 1); store.setMonthly('csLicences', 1.5, 1); store.setMonthly('csLicences', 0, NaN);
+  store.setMonthly('nope', 0, 1);
+  await debounce();
+  assert.equal(db.writes.length, n);
+  assert.equal(JSON.stringify(store.getState().inputs), before);
+  store.setScalar('pricePerSms', null); // explicit clear is allowed
+  await debounce();
+  assert.equal(db.docs.get('plan/inputs').scalars.pricePerSms, null);
+});

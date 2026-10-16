@@ -10,10 +10,10 @@
 
 **Spec:** `SPEC.md`, `CALCULATIONS.md`, `CLAUDE.md`; golden results `tests/expected_v5.json`; source model `reference/Operations_Cost_Plan_2027_v5.xlsx`.
 
-## Decisions needed from Luca before Task 1 and Task 3
+## Decisions (agreed with Luca, 16 Oct 2026)
 
-1. **Hiring fee when end date < start date.** The Excel books the fee in the start month regardless (`Personnel!V8 = $H8/3*J8 + IF(AND($E8<>"",$E8>=V$4,$E8<=V$5),$I8,0)`). SPEC §7.2 says such a role costs 0. **Recommendation:** match the Excel, because the engine's job is to reproduce it, and show a "End date before start date" warning on the row. Only the edge-case test in Task 1 changes with the answer.
-2. **Concurrent edits (SPEC §5).** The `db` capability has no version pinning or `conflict` error; writes are last-writer-wins, and `update` merges nested objects. **Recommendation:** write one field per `update` (`{scalars: {key: v}}` merges just that key; a monthly array replaces only that array), and never overwrite the input that has focus with a remote change. Two editors editing different fields never clobber each other; editing the same field means the last save wins.
+1. **Hiring fee when end date < start date:** match the Excel. The fee is booked in the start month (`Personnel!V8 = $H8/3*J8 + IF(AND($E8<>"",$E8>=V$4,$E8<=V$5),$I8,0)`), and the Personnel tab shows an "End date before start date" warning on the row. This supersedes SPEC §7.2's "role cost 0" for the fee.
+2. **Concurrent edits:** one field per `update` (`{scalars: {key: v}}` merges just that key; a monthly array replaces only that array), last save wins on the same field, and the focused input is never overwritten by a remote change. This replaces SPEC §5's version-pinned conflict handling, which the `db` capability does not support.
 
 ## Global Constraints
 
@@ -52,12 +52,11 @@
 
 - [ ] **Step 1: Write the failing golden test.** Parse each golden key as `/^(r\d+) /` to get the row id and look it up in `summaryRows(calculate(inputs, roles, departments))`. For every row: assert all 12 `monthly` values and `total` within `golden.tolerance`; for line rows, also assert `bucket === golden.bucket` and `fv === golden.fixedVariable`. For each `personnelByRole` id: compare `fte[m]` within 0.0001, and `cost[m]` and `total2027` within 0.01. Add a test that `summaryRows` returns exactly the 46 golden row ids in the same order.
 - [ ] **Step 2: Add the Review Focus #3 test.** With `roles` filtered to remove every `Billing & Invoicing` role, row `r41` exists with all zeros, and `r47` minus (`r50` + `r51`) is 0 in every month.
-- [ ] **Step 3: Apply decision 1 to the edge-case test.** If the answer is "match Excel": change `end date before start gives zero role cost` to use a fee of 500 and assert a total of 500 booked in the start month. If the answer is "cost 0": keep the test as it is and also assert 0 with a fee of 500.
+- [ ] **Step 3: Apply decision 1 to the edge-case test.** Rename `end date before start gives zero role cost` to `end date before start: no salary, hiring fee still booked (Excel)`, use a fee of 500, and assert total 500, all in the start month (June).
 - [ ] **Step 4: Run `npm test`.** Expected: FAIL on `summaryRows is not a function`.
 - [ ] **Step 5: Implement `summaryRows` in `src/calc.js`, and the engine fixes it needs:**
   - `keyFigures.pods.total` = average of 12 months (golden r64 = 582.916667). The current value is December's, the only mismatch found so far. CALCULATIONS §2's "Total = December" applies to the Calculations sheet, not the Summary row.
   - Department lines follow `SUMMARY_DEPARTMENTS` order; any other department found in roles is appended after them.
-  - If decision 1 = "cost 0": no hiring fee when `end < start`.
   - Rows: lines r06–r09, r13–r15, r19–r24, r28–r29, r33–r36, r40–r44; subtotals r10, r16, r25, r30, r37, r45; r47 total; r50 variable, r51 fixed; r55 ctsOps, r56 ctsCare, r57 cts, r58 ctsVariable, r59 outside; r63 new customers, r64 PODs, r65 payments, r66 FTE; r69 ctsAverage, r70 ctsOps, r71 ctsCare, r72 ctsMarginal.
 - [ ] **Step 6: Run `npm test`.** Expected: all pass, 0 skipped.
 - [ ] **Step 7: Commit:** `git commit -m "Golden test vs expected_v5.json and Summary row model"`

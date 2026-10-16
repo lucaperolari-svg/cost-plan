@@ -1,7 +1,8 @@
 // In-memory test double of the artifact `db` capability. Plain browser-safe ES:
 // no Node imports, only Promise/setTimeout/Date, so page tests can inject it too.
 // Faithful on: own writes visible at once (hasPendingWrites) and reverted if rejected,
-// frozen snapshot data, onSnapshot error callbacks, acquire leases, configurable write delay.
+// frozen snapshot data, onSnapshot error callbacks, acquire leases, configurable write delay, and an
+// optional delay before each subscription's first snapshot (a slow network: nothing is delivered before it).
 
 const isObj = (v) => v && typeof v === 'object' && !Array.isArray(v);
 const clone = (v) => JSON.parse(JSON.stringify(v));
@@ -13,7 +14,7 @@ const merge = (dst, src) => {
 const parent = (path) => path.slice(0, path.lastIndexOf('/'));
 const later = (fn) => Promise.resolve().then(fn);
 
-export function fakeDb({ writeDelay = 0 } = {}) {
+export function fakeDb({ writeDelay = 0, snapshotDelay = 0 } = {}) {
   const docs = new Map(); // path -> body (includes this client's unconfirmed writes)
   const pendingCount = new Map(); // path -> unconfirmed own writes
   const leases = new Map(); // path -> {holder, expires}
@@ -23,6 +24,7 @@ export function fakeDb({ writeDelay = 0 } = {}) {
   const remoteWrites = [];
   let failNext = null;
   let delay = writeDelay;
+  let firstDelay = snapshotDelay;
 
   const meta = (path) => ({ fromCache: false, hasPendingWrites: (pendingCount.get(path) || 0) > 0 });
   const snap = (path) => {
@@ -33,9 +35,10 @@ export function fakeDb({ writeDelay = 0 } = {}) {
     const list = [...docs.keys()].filter((p) => parent(p) === path).sort().map(snap);
     return { docs: list, size: list.length, empty: !list.length, metadata: { fromCache: false, hasPendingWrites: list.some((d) => d.metadata.hasPendingWrites) } };
   };
+  // a listener gets changes only after its first snapshot (which already carries the current state)
   const notify = (path) => {
-    for (const s of docSubs) if (s.path === path) later(() => s.live && s.next(snap(path)));
-    for (const s of colSubs) if (s.path === parent(path)) later(() => s.live && s.next(colSnap(s.path)));
+    for (const s of docSubs) if (s.path === path && s.started) later(() => s.live && s.next(snap(path)));
+    for (const s of colSubs) if (s.path === parent(path) && s.started) later(() => s.live && s.next(colSnap(s.path)));
   };
   const apply = (op, path, data) => {
     if (op === 'set') docs.set(path, clone(data));
@@ -60,9 +63,10 @@ export function fakeDb({ writeDelay = 0 } = {}) {
     });
   };
   const subscribe = (set, path, view, next, error) => {
-    const s = { path, next, error, live: true };
+    const s = { path, next, error, live: true, started: false };
     set.add(s);
-    later(() => s.live && next(view(path)));
+    const first = () => { if (!s.live) return; s.started = true; next(view(path)); };
+    if (firstDelay > 0) setTimeout(first, firstDelay); else later(first);
     return () => { s.live = false; set.delete(s); };
   };
   const docRef = (path) => ({
@@ -97,6 +101,8 @@ export function fakeDb({ writeDelay = 0 } = {}) {
     remoteWrites,
     docs, // raw state, for assertions
     setWriteDelay: (ms) => { delay = ms; },
+    setSnapshotDelay: (ms) => { firstDelay = ms; }, // delay before the first snapshot of later subscriptions
+    subscriptions: () => docSubs.size + colSubs.size, // live listeners
     failNext: (code) => { failNext = code; }, // next write is rejected with {code} (and reverted)
     failSubscriptions: (code) => { // terminate every listener with an error
       for (const s of [...docSubs, ...colSubs]) { s.live = false; s.error?.({ code, message: code }); }

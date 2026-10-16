@@ -23,7 +23,7 @@ const CONNECT_TIMEOUT_MS = Number(window.__OCP_CONNECT_TIMEOUT_MS) > 0 ? Number(
 // --- store and capabilities
 const subs = new Set();
 let store = null, unsubStore = null;
-let connecting = !!window.claude; // until db/user resolve and the store knows the write permission
+let connecting = !!window.claude; // until db/user resolve, the store knows the write permission and the first snapshots arrived
 const caps = { db: null, user: null, downloads: null };
 let downloading = false;
 let notice = null, noticeTimer = null; // brief download feedback in the status area: {text, state}
@@ -63,7 +63,8 @@ async function connect() {
   const use = (name) => Promise.resolve().then(() => c.use(name)).catch(() => null);
   use('downloads').then((d) => { caps.downloads = d || null; renderDownload(); });
   // The db attaches as soon as it resolves; `user` may arrive later (or never), so the store gets a
-  // proxy that waits for it. The store starts read-only and stays so until can() answers.
+  // proxy that waits for it. The store starts read-only and stays so until can() answers and the first
+  // plan/inputs, plan/meta and roles snapshots have arrived (store.ready), so nobody edits the seed values.
   const userP = use('user').then((u) => (caps.user = u || null));
   const lazyUser = {
     can: async (p) => { const u = await userP; return u ? u.can(p) : null; },
@@ -75,7 +76,8 @@ async function connect() {
     useStore(createStore({ db: caps.db, user: lazyUser, seed: seed() }));
     try { await store.ready; } catch { /* store stays read-only */ }
   });
-  // The cap only ends "Connecting…" (seed view, View only meanwhile); capabilities still attach when they arrive.
+  // The cap only ends "Connecting…" (seed view, View only meanwhile); capabilities still attach when they arrive,
+  // and the store stays read-only until its snapshots arrive, however long that takes.
   let timer;
   const timeout = new Promise((resolve) => { timer = setTimeout(resolve, CONNECT_TIMEOUT_MS); });
   try { await Promise.race([attach, timeout]); } finally {

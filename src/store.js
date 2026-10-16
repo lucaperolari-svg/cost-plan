@@ -9,7 +9,13 @@ export function createStore({ db, user, seed, debounceMs = 600, retryMs = () => 
   const subs = new Set();
   const holder = `store-${Math.random().toString(36).slice(2)}`; // lease holder for seeding
   let disposed = false, timer = null, chain = Promise.resolve(), busy = 0, seeded = false;
-  let readOnly = true, status = 'idle', error;
+  // Edits are accepted only when the viewer may write (permitted), no terminal error has happened, and every
+  // listener has delivered its first snapshot (synced): before that the page would show and build on the seed.
+  let permitted = false, terminal = false, status = 'idle', error;
+  const listeners = []; // {arrived}: one per db listener
+  const synced = () => listeners.every((l) => l.arrived);
+  const stopped = () => terminal || disposed || !permitted; // no writes at all
+  const isReadOnly = () => stopped() || !synced(); // no new edits
   let dbInputs = null, dbMeta = null, dbRoles = null; // last db snapshots (null = missing)
   let localRoles = clone(seed.roles); // roles while the db has no plan yet
   const fresh = () => ({ scalars: {}, monthly: {} });
@@ -32,7 +38,7 @@ export function createStore({ db, user, seed, debounceMs = 600, retryMs = () => 
       inputs: inputsFrom(...layers, pending),
       roles: roleLayers.reduce((l, apply) => apply(l), dbInputs && dbRoles ? dbRoles : localRoles),
       departments: dbMeta?.departments || seed.departments,
-      readOnly, source: dbInputs ? 'db' : 'seed', status,
+      readOnly: isReadOnly(), source: dbInputs ? 'db' : 'seed', status,
       ...(error ? { error } : {}),
     };
     for (const fn of [...subs]) fn(state);
@@ -55,12 +61,12 @@ export function createStore({ db, user, seed, debounceMs = 600, retryMs = () => 
     }
   }
   function enqueue(job, batch, done) {
-    if (readOnly || disposed) return;
+    if (stopped()) return;
     if (batch) layers.push(batch);
     busy++; status = 'saving'; error = undefined; recompute();
-    chain = chain.then(() => (readOnly || disposed ? undefined : job())).catch((e) => {
+    chain = chain.then(() => (stopped() ? undefined : job())).catch((e) => {
       status = 'error'; error = e?.message || String(e?.code || e);
-      if (e?.code === 'invalid_argument' || e?.code === 'revoked') { readOnly = true; clearTimeout(timer); timer = null; pending = fresh(); }
+      if (e?.code === 'invalid_argument' || e?.code === 'revoked') { terminal = true; clearTimeout(timer); timer = null; pending = fresh(); }
     }).then(() => {
       if (batch) layers.splice(layers.indexOf(batch), 1); // drop only this batch's overlay
       done?.();
@@ -98,7 +104,7 @@ export function createStore({ db, user, seed, debounceMs = 600, retryMs = () => 
   function flushInputs() {
     timer = null;
     if (!Object.keys(pending.scalars).length && !Object.keys(pending.monthly).length) return;
-    if (readOnly || disposed) { pending = fresh(); return; }
+    if (stopped()) { pending = fresh(); return; }
     const batch = pending; pending = fresh();
     enqueue(async () => {
       if ((await seedIfNeeded()) === 'seeded') return;
@@ -110,7 +116,7 @@ export function createStore({ db, user, seed, debounceMs = 600, retryMs = () => 
     }, batch);
   }
   const queueEdit = (fn) => {
-    if (readOnly || disposed) return;
+    if (isReadOnly()) return;
     fn();
     clearTimeout(timer);
     timer = setTimeout(flushInputs, debounceMs);
@@ -124,7 +130,7 @@ export function createStore({ db, user, seed, debounceMs = 600, retryMs = () => 
     queueEdit(() => { pending.scalars[key] = value; });
   }
   function setMonthly(name, index, value) {
-    if (!okValue(value) || !state.inputs.monthly[name] || !Number.isInteger(index) || index < 0 || index > 11) return;
+    if (isReadOnly() || !okValue(value) || !state.inputs.monthly[name] || !Number.isInteger(index) || index < 0 || index > 11) return;
     const arr = clone(state.inputs.monthly[name]);
     arr[index] = value;
     queueEdit(() => { pending.monthly[name] = arr; });
@@ -132,7 +138,7 @@ export function createStore({ db, user, seed, debounceMs = 600, retryMs = () => 
   // The edit shows at once (local roles before the plan exists, else an overlay on the db roles until its
   // write settles), so a second edit of the same role, made before the snapshot returns, builds on the first.
   function roleEdit(apply, write) {
-    if (readOnly || disposed) return;
+    if (isReadOnly()) return;
     let layer = null;
     if (!dbInputs && !seeded) localRoles = apply(localRoles);
     else roleLayers.push((layer = apply));
@@ -152,18 +158,29 @@ export function createStore({ db, user, seed, debounceMs = 600, retryMs = () => 
 
   // --- subscriptions
   const unsubs = [];
-  const onErr = (e) => { status = 'error'; error = e?.message || 'Database error'; if (e?.code === 'revoked') readOnly = true; recompute(); };
+  let markSynced;
+  const syncedOnce = new Promise((resolve) => { markSynced = resolve; });
+  const checkSynced = () => { if (synced() || terminal || disposed) markSynced(); };
+  const onErr = (e) => { status = 'error'; error = e?.message || 'Database error'; if (e?.code === 'revoked') terminal = true; checkSynced(); recompute(); };
+  // one listener: arrived turns true with its first snapshot (a missing doc, exists:false, counts)
+  const listen = (ref, onData) => {
+    const l = { arrived: false };
+    listeners.push(l);
+    unsubs.push(ref.onSnapshot((s) => { l.arrived = true; onData(s); checkSynced(); recompute(); }, onErr));
+  };
   if (db) {
-    unsubs.push(db.doc('plan/inputs').onSnapshot((s) => { dbInputs = isPlan(s) ? s.data() : null; if (dbInputs) { planWaiters.forEach((w) => w()); planWaiters = []; } recompute(); }, onErr));
-    unsubs.push(db.doc('plan/meta').onSnapshot((s) => { dbMeta = s.exists ? s.data() : null; recompute(); }, onErr));
-    unsubs.push(db.collection('roles').onSnapshot((s) => { dbRoles = s.docs.map((d) => ({ ...strip(d.data()), id: d.id })); recompute(); }, onErr));
+    listen(db.doc('plan/inputs'), (s) => { dbInputs = isPlan(s) ? s.data() : null; if (dbInputs) { planWaiters.forEach((w) => w()); planWaiters = []; } });
+    listen(db.doc('plan/meta'), (s) => { dbMeta = s.exists ? s.data() : null; });
+    listen(db.collection('roles'), (s) => { dbRoles = s.docs.map((d) => ({ ...strip(d.data()), id: d.id })); });
   }
+  // resolves once the write permission is known and the first snapshots have arrived (or a terminal error)
   const ready = (async () => {
     let can = null;
     if (!db) return;
     try { can = user ? await user.can('data.write') : null; } catch { /* unknown */ }
-    readOnly = can === false;
+    permitted = can !== false;
     recompute();
+    await syncedOnce;
   })();
   recompute();
 
@@ -172,6 +189,6 @@ export function createStore({ db, user, seed, debounceMs = 600, retryMs = () => 
     getState: () => state,
     subscribe(fn) { subs.add(fn); return () => subs.delete(fn); },
     setScalar, setMonthly, upsertRole, deleteRole,
-    dispose() { disposed = true; clearTimeout(timer); unsubs.forEach((u) => u()); subs.clear(); },
+    dispose() { disposed = true; clearTimeout(timer); unsubs.forEach((u) => u()); subs.clear(); checkSynced(); },
   };
 }

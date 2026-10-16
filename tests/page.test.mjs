@@ -2,7 +2,7 @@
 // Harness: openPage({claude, cdn, colorScheme, viewport}) -> page (with page.errors).
 //   claude: undefined -> no window.claude at all.
 //           {db, user, downloads, delayMs, script} -> window.claude.use(name) stub:
-//             db: true | {writeDelay, docs: {path: body}} -> fakeDb() from tests/fake-db.js, null -> resolves null
+//             db: true | {writeDelay, snapshotDelay, docs: {path: body}} -> fakeDb() from tests/fake-db.js, null -> resolves null
 //             user: {can, id, isOwner, canEdit} (can = can('data.write') result) | null
 //             downloads: true -> records saves in window.__test.saves, null -> resolves null
 //             delayMs: delay before every use() resolves (default 20; never synchronous)
@@ -44,7 +44,7 @@ function claudeStub(opts) {
     const o = ${JSON.stringify(opts)};
     const T = (window.__test = { saves: [] });
     if (o.db) {
-      T.db = fakeDb({ writeDelay: o.db.writeDelay || 0 });
+      T.db = fakeDb({ writeDelay: o.db.writeDelay || 0, snapshotDelay: o.db.snapshotDelay || 0 });
       for (const [p, body] of Object.entries(o.db.docs || {})) T.db.docs.set(p, body);
     }
     if (o.user) {
@@ -796,6 +796,59 @@ test('personnel: two quick edits of the same role both survive (the second write
   assert.equal(d.fte, 0.5);
   assert.equal(d.department, 'Customer Service');
   assert.equal(await pfValue(page, 'R02:role'), 'Deputy COO');
+  await page.close();
+});
+
+// --- final review fixes: the window before the first snapshots, edits in flight together, first-edit seeding
+// the db holds a colleague's plan: +7 new customers a month and R02 at 0.25 FTE
+const colleagueDocs = () => {
+  const d = seededDocs();
+  d['plan/inputs'] = { ...d['plan/inputs'], monthly: { ...inputsSeed.monthly, newCustomers: inputsSeed.monthly.newCustomers.map((x) => x + 7) } };
+  d['roles/R02'] = { ...d['roles/R02'], fte: 0.25 };
+  return d;
+};
+
+test('before the first snapshots: Connecting…, inputs disabled, no writes; then the colleague\'s data shows and edits build on it', async () => {
+  const docs = colleagueDocs();
+  const page = await openPage({ claude: { db: { docs, snapshotDelay: 1500 }, user: { can: true, id: 'u1' } } });
+  await page.getByRole('tab', { name: 'Inputs' }).click();
+  await page.waitForFunction(() => window.__app.getState().source === 'seed' && document.getElementById('save-status').textContent === 'Connecting…');
+  // can() has answered (delayMs 20) but the snapshots have not arrived
+  await page.waitForFunction(() => window.__test.user && document.querySelector('#panel-inputs input[data-key="newCustomers:11"]'));
+  assert.equal(await page.$eval(field('newCustomers:11'), (e) => e.disabled), true);
+  assert.equal(await page.evaluate(() => window.__app.getState().readOnly), true);
+  await page.evaluate(() => {
+    const a = window.__app.actions, st = window.__app.getState();
+    a.setMonthly('newCustomers', 11, 999);
+    a.setScalar('aiCallShare', 0.5);
+    a.upsertRole({ ...st.roles.find((r) => r.id === 'R02'), description: 'edited' });
+  });
+  await page.waitForFunction(() => window.__app.getState().source === 'db' && window.__app.getState().readOnly === false, null, { timeout: 4000 });
+  assert.equal(await page.evaluate(() => window.__test.db.writes.length), 0);
+  assert.equal(await page.isHidden('#save-status'), true);
+  assert.equal(await fieldValue(page, 'newCustomers:0'), String(docs['plan/inputs'].monthly.newCustomers[0]));
+  await page.fill(field('newCustomers:11'), '999');
+  await page.locator(field('newCustomers:11')).blur();
+  await page.waitForFunction(() => window.__test.db.docs.get('plan/inputs').monthly.newCustomers[11] === 999, null, { timeout: 2000 });
+  const db = await page.evaluate(() => ({ nc: window.__test.db.docs.get('plan/inputs').monthly.newCustomers, r02: window.__test.db.docs.get('roles/R02') }));
+  assert.deepEqual(db.nc, [...docs['plan/inputs'].monthly.newCustomers.slice(0, 11), 999]);
+  assert.equal(db.r02.fte, 0.25);
+  assert.deepEqual(page.errors, []);
+  await page.close();
+});
+
+test('snapshots slower than the connect cap: View only until they arrive, then editable', async () => {
+  const page = await openPage({ claude: {
+    db: { docs: colleagueDocs(), snapshotDelay: 1200 }, user: { can: true, id: 'u1' },
+    script: 'window.__OCP_CONNECT_TIMEOUT_MS = 300;',
+  } });
+  await page.waitForFunction(() => !document.getElementById('badge-view-only').hidden, null, { timeout: 3000 });
+  assert.equal(await page.evaluate(() => window.__app.getState().readOnly), true);
+  assert.equal(await page.evaluate(() => window.__app.getState().source), 'seed');
+  await page.evaluate(() => window.__app.actions.setMonthly('newCustomers', 11, 999));
+  await page.waitForFunction(() => document.getElementById('badge-view-only').hidden && window.__app.getState().readOnly === false && window.__app.getState().source === 'db', null, { timeout: 3000 });
+  assert.equal(await page.evaluate(() => window.__test.db.writes.length), 0);
+  assert.deepEqual(page.errors, []);
   await page.close();
 });
 

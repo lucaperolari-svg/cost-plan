@@ -389,3 +389,71 @@ test('role edits show at once (overlay until written), so a second edit builds o
   await drain(3);
   assert.equal(r02().fte, 0.5);
 });
+
+// --- final review fixes: no edits before the first snapshots, dead listeners resubscribe
+// a db that already holds a colleague's plan: +7 new customers a month, R02 at 0.25 FTE, R14 added
+const colleaguePlan = (db) => {
+  const s = seed();
+  const nc = s.inputs.monthly.newCustomers.map((x) => x + 7);
+  db.docs.set('plan/inputs', { monthly: { newCustomers: nc, csLicences: s.inputs.monthly.csLicences }, scalars: Object.fromEntries(s.inputs.scalars.map((x) => [x.key, x.value])) });
+  db.docs.set('plan/meta', { departments: s.departments });
+  for (const r of s.roles) db.docs.set(`roles/${r.id}`, r);
+  db.docs.set('roles/R02', { ...s.roles[1], fte: 0.25 });
+  db.docs.set('roles/R14', { ...s.roles[0], id: 'R14', role: 'Colleague added' });
+  return nc;
+};
+
+test('slow first snapshot: read-only and no writes until plan/inputs and roles arrive, then edits build on the db', async (t) => {
+  t.after(() => mock.timers.reset());
+  mock.timers.reset();
+  mock.timers.enable({ apis: ['setTimeout'] });
+  const db = fakeDb({ snapshotDelay: 300 });
+  const nc = colleaguePlan(db);
+  const store = createStore({ db, user: user(), seed: seed(), debounceMs: 600 });
+  let ready = false;
+  store.ready.then(() => { ready = true; });
+  await settle();
+  assert.equal(ready, false); // can() answered, snapshots not yet
+  assert.equal(store.getState().readOnly, true);
+  assert.equal(store.getState().source, 'seed');
+  store.setMonthly('newCustomers', 11, 999);
+  store.setScalar('aiCallShare', 0.5);
+  store.upsertRole({ ...store.getState().roles.find((r) => r.id === 'R02'), description: 'edited' });
+  store.deleteRole('R03');
+  store.upsertRole({ ...seed().roles[0], id: 'R14', role: 'Reused id' });
+  mock.timers.tick(299); await settle();
+  assert.equal(db.writes.length, 0);
+  assert.equal(store.getState().readOnly, true);
+  mock.timers.tick(1); await settle();
+  await store.ready;
+  const st = store.getState();
+  assert.equal(st.readOnly, false);
+  assert.equal(st.source, 'db');
+  assert.deepEqual(st.inputs.monthly.newCustomers, nc);
+  assert.equal(st.roles.find((r) => r.id === 'R02').fte, 0.25);
+  // now an edit builds on the colleague's data
+  store.setMonthly('newCustomers', 11, 999);
+  store.upsertRole({ ...st.roles.find((r) => r.id === 'R02'), description: 'edited' });
+  await debounce(); await drain(2);
+  assert.deepEqual(db.docs.get('plan/inputs').monthly.newCustomers, [...nc.slice(0, 11), 999]);
+  assert.equal(db.docs.get('roles/R02').fte, 0.25);
+  assert.equal(db.docs.get('roles/R02').description, 'edited');
+  assert.equal(db.docs.get('roles/R14').role, 'Colleague added');
+});
+
+test('empty db with a slow first snapshot: exists:false counts as arrived, then the first edit seeds', async (t) => {
+  t.after(() => mock.timers.reset());
+  mock.timers.reset();
+  mock.timers.enable({ apis: ['setTimeout'] });
+  const db = fakeDb({ snapshotDelay: 300 });
+  const store = createStore({ db, user: user(), seed: seed(), debounceMs: 600 });
+  await settle();
+  assert.equal(store.getState().readOnly, true);
+  mock.timers.tick(300); await settle();
+  await store.ready;
+  assert.equal(store.getState().readOnly, false);
+  assert.equal(store.getState().source, 'seed');
+  store.setScalar('aiCallShare', 0.5);
+  await debounce(); await drain(2);
+  assert.equal(db.docs.get('plan/inputs').scalars.aiCallShare, 0.5);
+});

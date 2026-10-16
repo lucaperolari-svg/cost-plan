@@ -377,3 +377,156 @@ test('a use(user) that never resolves does not drop the db: db plan shown, View 
   assert.deepEqual(page.errors, []);
   await page.close();
 });
+
+// --- Inputs tab (Task 7)
+const inputsSeed = JSON.parse(readFileSync(`${root}data/inputs.json`, 'utf8'));
+const personnelSeed = JSON.parse(readFileSync(`${root}data/personnel.json`, 'utf8'));
+// a db that already holds the v5 plan (so writes are per-field updates and remote updates apply)
+const seededDocs = () => ({
+  'plan/inputs': { monthly: inputsSeed.monthly, scalars: Object.fromEntries(inputsSeed.scalars.map((s) => [s.key, s.value])) },
+  'plan/meta': { departments: personnelSeed.departments },
+  ...Object.fromEntries(personnelSeed.roles.map((r) => [`roles/${r.id}`, r])),
+});
+const field = (key) => `#panel-inputs input[data-key="${key}"]`;
+const fieldValue = (page, key) => page.$eval(field(key), (e) => e.value);
+async function openInputs(opts = {}) {
+  const page = await openPage({ claude: { db: { docs: seededDocs() }, user: { can: true, id: 'u1' } }, ...opts });
+  await page.getByRole('tab', { name: 'Inputs' }).click();
+  await page.waitForSelector(field('aiCallShare'));
+  if (opts.editable !== false) await page.waitForFunction(() => window.__app.getState().readOnly === false && window.__app.getState().source === 'db');
+  return page;
+}
+
+test('inputs: every scalar has a field in seed order, grouped by section, with label, unit and note', async () => {
+  const page = await openInputs();
+  const keys = await page.$$eval('#panel-inputs input[data-key]:not([data-key*=":"])', (els) => els.map((e) => e.dataset.key));
+  assert.deepEqual(keys, inputsSeed.scalars.map((s) => s.key));
+  const sections = await page.$$eval('#panel-inputs [data-section]', (els) => els.map((e) => e.dataset.section));
+  assert.deepEqual(sections, [...new Set(inputsSeed.scalars.map((s) => s.section))]);
+  const row = await page.$eval('#panel-inputs [data-row="csLicencePricePerMonth"]', (e) => e.textContent);
+  assert.match(row, /EUR \/ licence \/ month/);
+  assert.equal(await fieldValue(page, 'aiCallShare'), '60%');
+  assert.equal(await fieldValue(page, 'haulogyFixedFeePerMonth'), '8,334');
+  assert.equal(await fieldValue(page, 'recordingsPricePerMinute'), '0.0031');
+  assert.deepEqual(page.errors, []);
+  await page.close();
+});
+
+test('inputs: typing 50 into aiCallShare and blurring shows 50%, changes the Summary total, writes 0.5 within 1 s', async () => {
+  const page = await openInputs();
+  const total = () => page.$eval('#panel-summary .tile .tile-value', (e) => e.textContent.trim());
+  assert.equal(await total(), '€1,216,931');
+  await page.fill(field('aiCallShare'), '50');
+  const t0 = Date.now();
+  await page.locator(field('aiCallShare')).blur();
+  assert.equal(await fieldValue(page, 'aiCallShare'), '50%');
+  assert.notEqual(await total(), '€1,216,931');
+  await page.waitForFunction(() => window.__test.db.writes.some((w) => w.path === 'plan/inputs' && w.data?.scalars?.aiCallShare === 0.5), null, { timeout: 1000 });
+  assert.ok(Date.now() - t0 < 1000);
+  const w = await page.evaluate(() => window.__test.db.writes.find((x) => x.path === 'plan/inputs'));
+  assert.deepEqual(Object.keys(w.data.scalars), ['aiCallShare']); // one field per update
+  assert.deepEqual(page.errors, []);
+  await page.close();
+});
+
+test('inputs: typing 90 into aiCallShare shows the AI + human error inline (live, before blur)', async () => {
+  const page = await openInputs();
+  await page.click(field('aiCallShare'));
+  await page.fill(field('aiCallShare'), '90');
+  const text = await page.textContent('#panel-inputs');
+  assert.match(text, /AI \+ human share above 100%/);
+  assert.equal(await page.$eval(field('aiCallShare'), (e) => e.getAttribute('aria-invalid')), 'true');
+  assert.equal(await page.$eval('#panel-inputs [data-derived="noHumanNoAiShare"]', (e) => e.textContent.trim()), '-10%');
+  await page.close();
+});
+
+test('inputs: Section A shows New customers total 2,000 and Difference vs target: 0; a change updates it live', async () => {
+  const page = await openInputs();
+  assert.equal(await page.$eval('#panel-inputs [data-check="newCustomersTotal"]', (e) => e.textContent.trim()), '2,000');
+  assert.match(await page.textContent('#panel-inputs [data-check="newCustomersVsTarget"]'), /Difference vs target: 0/);
+  assert.equal(await page.$$eval('#panel-inputs input[data-key^="newCustomers:"]', (e) => e.length), 12);
+  assert.equal(await page.$$eval('#panel-inputs input[data-key^="csLicences:"]', (e) => e.length), 12);
+  await page.fill(field('newCustomers:6'), '343');
+  assert.equal(await page.$eval('#panel-inputs [data-check="newCustomersTotal"]', (e) => e.textContent.trim()), '2,010');
+  const check = page.locator('#panel-inputs [data-check="newCustomersVsTarget"]');
+  assert.match(await check.textContent(), /Difference vs target: 10/);
+  assert.match(await check.getAttribute('class'), /is-warning/);
+  await page.locator(field('newCustomers:6')).blur();
+  await page.waitForFunction(() => window.__test.db.writes.some((w) => w.path === 'plan/inputs' && w.data?.monthly?.newCustomers?.[6] === 343));
+  await page.close();
+});
+
+test('inputs: derived values are read-only (card share 23%, SEPA fee €0.35, card fee €1.95, no-human 20%)', async () => {
+  const page = await openInputs();
+  const d = await page.$$eval('#panel-inputs [data-derived]', (els) => Object.fromEntries(els.map((e) => [e.dataset.derived, { text: e.textContent.trim(), tag: e.tagName }])));
+  assert.equal(d.paymentMixCard.text, '23%');
+  assert.equal(d.sepaFeePerTx.text, '€0.35');
+  assert.equal(d.cardFeePerTx.text, '€1.95');
+  assert.equal(d.noHumanNoAiShare.text, '20%');
+  for (const v of Object.values(d)) assert.notEqual(v.tag, 'INPUT');
+  await page.close();
+});
+
+test('inputs: European entry, unparseable text is not written, empty is written as null and marked not filled', async () => {
+  const page = await openInputs();
+  await page.fill(field('costPerAiCall'), '1.234,5');
+  await page.locator(field('costPerAiCall')).blur();
+  assert.equal(await fieldValue(page, 'costPerAiCall'), '1,234.5');
+  await page.fill(field('costOfContact'), '1,2x');
+  await page.locator(field('costOfContact')).blur();
+  assert.equal(await fieldValue(page, 'costOfContact'), '1,2x');
+  assert.match(await page.textContent('#panel-inputs [data-row="costOfContact"]'), /Not a number/);
+  await page.fill(field('podsPerCustomer'), '');
+  await page.locator(field('podsPerCustomer')).blur();
+  assert.match(await page.getAttribute(field('podsPerCustomer'), 'class'), /is-empty/);
+  await page.waitForTimeout(900);
+  const scalars = await page.evaluate(() => window.__test.db.writes.filter((w) => w.path === 'plan/inputs').map((w) => w.data.scalars));
+  assert.ok(scalars.some((s) => s?.costPerAiCall === 1234.5));
+  assert.ok(scalars.some((s) => s && 'podsPerCustomer' in s && s.podsPerCustomer === null));
+  assert.ok(!scalars.some((s) => s && 'costOfContact' in s));
+  assert.deepEqual(page.errors, []);
+  await page.close();
+});
+
+test('inputs: a remote save while typing keeps the focused text and updates the other field (Review Focus #2)', async () => {
+  const page = await openInputs();
+  await page.click(field('costOfContact'));
+  await page.keyboard.press('ControlOrMeta+a');
+  await page.keyboard.type('1,2');
+  await page.evaluate(() => window.__test.db.remote('update', 'plan/inputs', { scalars: { costOfContact: 5, costPerAiCall: 2.5 } }));
+  await page.waitForFunction(() => window.__app.getState().inputs.scalars.find((s) => s.key === 'costPerAiCall').value === 2.5);
+  await page.waitForFunction((sel) => document.querySelector(sel).value === '2.5', field('costPerAiCall'));
+  assert.equal(await fieldValue(page, 'costOfContact'), '1,2');
+  assert.equal(await page.evaluate((sel) => document.activeElement === document.querySelector(sel), field('costOfContact')), true);
+  // committing afterwards: last save wins
+  await page.locator(field('costOfContact')).blur();
+  await page.waitForFunction(() => window.__test.db.docs.get('plan/inputs').scalars.costOfContact === 1.2, null, { timeout: 1500 });
+  assert.equal(await fieldValue(page, 'costOfContact'), '1.2');
+  await page.close();
+});
+
+test('inputs: viewer (can false) sees every input disabled with values visible', async () => {
+  const page = await openInputs({ claude: { db: { docs: seededDocs() }, user: { can: false } }, editable: false });
+  await page.waitForFunction(() => window.__app.getState().source === 'db');
+  await page.waitForTimeout(100);
+  const st = await page.$$eval('#panel-inputs input', (els) => ({ n: els.length, enabled: els.filter((e) => !e.disabled).length }));
+  assert.ok(st.n >= 24 + 40);
+  assert.equal(st.enabled, 0);
+  assert.equal(await fieldValue(page, 'aiCallShare'), '60%');
+  assert.deepEqual(page.errors, []);
+  await page.close();
+});
+
+test('inputs at 375 px, light and dark: no page-level horizontal scroll, monthly table scrolls in its wrapper', async () => {
+  for (const colorScheme of ['light', 'dark']) {
+    const page = await openInputs({ colorScheme, viewport: { width: 375, height: 800 } });
+    const m = await page.evaluate(() => {
+      const wrap = document.querySelector('#panel-inputs .table-scroll');
+      return { sw: document.documentElement.scrollWidth, wrapScrolls: wrap.scrollWidth > wrap.clientWidth, overflow: getComputedStyle(wrap).overflowX };
+    });
+    assert.ok(m.sw <= 375, `scrollWidth ${m.sw}`);
+    assert.equal(m.overflow, 'auto');
+    assert.equal(m.wrapScrolls, true);
+    await page.close();
+  }
+});

@@ -7,6 +7,7 @@ import personnelSeed from '../../data/personnel.json';
 import { createStore } from '../store.js';
 import { calculate } from '../calc.js';
 import { renderSummary, destroySummary } from './summary.js';
+import { renderInputs, destroyInputs } from './inputs.js';
 
 const TABS = ['summary', 'inputs', 'personnel', 'readme'];
 const TAB_KEY = 'ocp2027.tab';
@@ -163,6 +164,12 @@ mountTab('summary', ({ el, getState, subscribe }) => {
   render(getState());
   const unsubscribe = subscribe(render);
   return () => { unsubscribe(); destroySummary(el); };
+});
+mountTab('inputs', ({ el, getState, subscribe, actions }) => {
+  const render = (state) => renderInputs(el, state, actions);
+  render(getState());
+  const unsubscribe = subscribe(render);
+  return () => { unsubscribe(); destroyInputs(el); };
 });
 const hash = location.hash.slice(1), saved = tabMemory.get();
 selectTab(TABS.includes(hash) ? hash : TABS.includes(saved) ? saved : 'summary', { remember: false });

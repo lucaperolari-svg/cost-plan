@@ -105,7 +105,7 @@ export function fakeDb({ writeDelay = 0, snapshotDelay = 0 } = {}) {
     subscriptions: () => docSubs.size + colSubs.size, // live listeners
     failNext: (code) => { failNext = code; }, // next write is rejected with {code} (and reverted)
     failSubscriptions: (code) => { // terminate every listener with an error
-      for (const s of [...docSubs, ...colSubs]) { s.live = false; s.error?.({ code, message: code }); }
+      for (const set of [docSubs, colSubs]) for (const s of [...set]) { s.live = false; set.delete(s); s.error?.({ code, message: code }); }
     },
     remote: (op, path, data) => { remoteWrites.push({ op, path, data }); return later(() => apply(op, path, data)); }, // write as another client
   };

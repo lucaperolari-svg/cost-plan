@@ -5,14 +5,20 @@ const clone = (v) => JSON.parse(JSON.stringify(v));
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const strip = ({ updatedAt, updatedBy, ...rest }) => rest;
 
-export function createStore({ db, user, seed, debounceMs = 600, retryMs = () => 150 + Math.random() * 350 }) {
+// a dead listener is resubscribed after this backoff (attempt 0, 1, …), reset when it delivers again
+const backoff = (attempt) => Math.min(15000, 1000 * 2 ** attempt) * (0.8 + Math.random() * 0.4);
+// listener errors after which a fresh onSnapshot cannot help: read-only for the rest of the visit
+const TERMINAL = new Set(['revoked', 'invalid_argument', 'transform_error', 'not_granted', 'capability_disabled', 'capability_removed']);
+const LOST = 'Connection to the plan lost, reconnecting…';
+
+export function createStore({ db, user, seed, debounceMs = 600, retryMs = () => 150 + Math.random() * 350, resubscribeMs = backoff }) {
   const subs = new Set();
   const holder = `store-${Math.random().toString(36).slice(2)}`; // lease holder for seeding
   let disposed = false, timer = null, chain = Promise.resolve(), busy = 0, seeded = false;
   // Edits are accepted only when the viewer may write (permitted), no terminal error has happened, and every
   // listener has delivered its first snapshot (synced): before that the page would show and build on the seed.
   let permitted = false, terminal = false, status = 'idle', error;
-  const listeners = []; // {arrived}: one per db listener
+  const listeners = []; // {arrived, dead, unsub, timer, attempt}: one per db listener
   const synced = () => listeners.every((l) => l.arrived);
   const stopped = () => terminal || disposed || !permitted; // no writes at all
   const isReadOnly = () => stopped() || !synced(); // no new edits
@@ -38,8 +44,9 @@ export function createStore({ db, user, seed, debounceMs = 600, retryMs = () => 
       inputs: inputsFrom(...layers, pending),
       roles: roleLayers.reduce((l, apply) => apply(l), dbInputs && dbRoles ? dbRoles : localRoles),
       departments: dbMeta?.departments || seed.departments,
-      readOnly: isReadOnly(), source: dbInputs ? 'db' : 'seed', status,
-      ...(error ? { error } : {}),
+      readOnly: isReadOnly(), source: dbInputs ? 'db' : 'seed',
+      // while a listener is dead the page shows its error, whatever a save that finishes meanwhile says
+      ...(listeners.some((l) => l.dead) ? { status: 'error', error: LOST } : { status, ...(error ? { error } : {}) }),
     };
     for (const fn of [...subs]) fn(state);
   };
@@ -157,21 +164,35 @@ export function createStore({ db, user, seed, debounceMs = 600, retryMs = () => 
   }
 
   // --- subscriptions
-  const unsubs = [];
   let markSynced;
   const syncedOnce = new Promise((resolve) => { markSynced = resolve; });
   const checkSynced = () => { if (synced() || terminal || disposed) markSynced(); };
-  const onErr = (e) => { status = 'error'; error = e?.message || 'Database error'; if (e?.code === 'revoked') terminal = true; checkSynced(); recompute(); };
-  // one listener: arrived turns true with its first snapshot (a missing doc, exists:false, counts)
-  const listen = (ref, onData) => {
-    const l = { arrived: false };
+  // One listener: arrived turns true with its first snapshot (a missing doc, exists:false, counts). A terminal
+  // error ends editing for the visit; any other (the dead-bridge `unavailable`, unknown codes) kills only this
+  // listener, so it is resubscribed after a backoff and the store is read-only until the fresh one delivers.
+  const listen = (makeRef, onData) => {
+    const l = { arrived: false, dead: false, unsub: null, timer: null, attempt: 0 };
     listeners.push(l);
-    unsubs.push(ref.onSnapshot((s) => { l.arrived = true; onData(s); checkSynced(); recompute(); }, onErr));
+    const start = () => {
+      l.timer = null;
+      if (disposed || terminal) return;
+      l.arrived = false;
+      l.unsub = makeRef().onSnapshot((s) => {
+        l.arrived = true; l.dead = false; l.attempt = 0;
+        onData(s); checkSynced(); recompute();
+      }, (e) => {
+        l.unsub = null; l.arrived = false;
+        if (TERMINAL.has(e?.code)) { terminal = true; status = 'error'; error = e?.message || 'Database error'; checkSynced(); }
+        else if (!disposed) { l.dead = true; l.timer = setTimeout(start, resubscribeMs(l.attempt++)); }
+        recompute();
+      });
+    };
+    start();
   };
   if (db) {
-    listen(db.doc('plan/inputs'), (s) => { dbInputs = isPlan(s) ? s.data() : null; if (dbInputs) { planWaiters.forEach((w) => w()); planWaiters = []; } });
-    listen(db.doc('plan/meta'), (s) => { dbMeta = s.exists ? s.data() : null; });
-    listen(db.collection('roles'), (s) => { dbRoles = s.docs.map((d) => ({ ...strip(d.data()), id: d.id })); });
+    listen(() => db.doc('plan/inputs'), (s) => { dbInputs = isPlan(s) ? s.data() : null; if (dbInputs) { planWaiters.forEach((w) => w()); planWaiters = []; } });
+    listen(() => db.doc('plan/meta'), (s) => { dbMeta = s.exists ? s.data() : null; });
+    listen(() => db.collection('roles'), (s) => { dbRoles = s.docs.map((d) => ({ ...strip(d.data()), id: d.id })); });
   }
   // resolves once the write permission is known and the first snapshots have arrived (or a terminal error)
   const ready = (async () => {
@@ -189,6 +210,10 @@ export function createStore({ db, user, seed, debounceMs = 600, retryMs = () => 
     getState: () => state,
     subscribe(fn) { subs.add(fn); return () => subs.delete(fn); },
     setScalar, setMonthly, upsertRole, deleteRole,
-    dispose() { disposed = true; clearTimeout(timer); unsubs.forEach((u) => u()); subs.clear(); checkSynced(); },
+    dispose() {
+      disposed = true; clearTimeout(timer);
+      for (const l of listeners) { clearTimeout(l.timer); l.unsub?.(); }
+      subs.clear(); checkSynced();
+    },
   };
 }

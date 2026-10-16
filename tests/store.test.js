@@ -457,3 +457,86 @@ test('empty db with a slow first snapshot: exists:false counts as arrived, then 
   await debounce(); await drain(2);
   assert.equal(db.docs.get('plan/inputs').scalars.aiCallShare, 0.5);
 });
+
+test('dead listeners (unavailable): read-only until a fresh onSnapshot delivers, then edits build on fresh data', async (t) => {
+  t.after(() => mock.timers.reset());
+  const { db, store } = await seeded();
+  const subsBefore = db.subscriptions();
+  db.failSubscriptions('unavailable');
+  assert.equal(store.getState().status, 'error');
+  assert.equal(store.getState().readOnly, true);
+  assert.equal(db.subscriptions(), 0);
+  // a colleague changes the plan while this page's listeners are dead
+  const nc = store.getState().inputs.monthly.newCustomers.map((x) => x + 7);
+  await db.remote('update', 'plan/inputs', { monthly: { newCustomers: nc } });
+  await db.remote('set', 'roles/R02', { ...seed().roles[1], fte: 0.25 });
+  const n = db.writes.length;
+  store.setMonthly('newCustomers', 11, 999);
+  store.upsertRole({ ...store.getState().roles.find((r) => r.id === 'R02'), description: 'stale' });
+  await debounce(); await settle();
+  assert.equal(db.writes.length, n); // no write built on the stale view
+  await drain(40, 500); // backoff, then a fresh onSnapshot
+  assert.equal(db.subscriptions(), subsBefore);
+  const st = store.getState();
+  assert.equal(st.readOnly, false);
+  assert.notEqual(st.status, 'error');
+  assert.deepEqual(st.inputs.monthly.newCustomers, nc);
+  store.setMonthly('newCustomers', 11, 999);
+  await debounce(); await drain(2);
+  assert.deepEqual(db.docs.get('plan/inputs').monthly.newCustomers, [...nc.slice(0, 11), 999]);
+});
+
+test('a save finishing while listeners are dead does not clear the error', async (t) => {
+  t.after(() => mock.timers.reset());
+  const { db, store } = await seeded();
+  db.setSnapshotDelay(5000); // the fresh listener is slow to deliver
+  store.setScalar('aiCallShare', 0.5); // accepted while live, still pending
+  db.failSubscriptions('unavailable');
+  await debounce(); await drain(2);
+  assert.equal(db.docs.get('plan/inputs').scalars.aiCallShare, 0.5); // the accepted edit is written
+  assert.equal(store.getState().status, 'error');
+  assert.ok(store.getState().error);
+  assert.equal(store.getState().readOnly, true);
+  await drain(40, 500);
+  assert.equal(store.getState().readOnly, false);
+  assert.notEqual(store.getState().status, 'error');
+});
+
+test('unknown listener error codes resubscribe like unavailable; revoked and invalid_argument stay terminal', async (t) => {
+  t.after(() => mock.timers.reset());
+  {
+    const { db, store } = await seeded();
+    db.failSubscriptions('queue_overflow');
+    assert.equal(store.getState().readOnly, true);
+    await drain(40, 500);
+    assert.equal(store.getState().readOnly, false);
+    assert.equal(db.subscriptions(), 3);
+  }
+  for (const code of ['revoked', 'invalid_argument']) {
+    const { db, store } = await seeded();
+    db.failSubscriptions(code);
+    await drain(40, 500);
+    assert.equal(db.subscriptions(), 0, code);
+    assert.equal(store.getState().readOnly, true, code);
+    assert.equal(store.getState().status, 'error', code);
+  }
+});
+
+test('repeated dead listeners back off, and dispose stops resubscribing', async (t) => {
+  t.after(() => mock.timers.reset());
+  const { db, store } = await seeded();
+  const db2 = db;
+  let subscribes = 0;
+  const realDoc = db2.doc, realCol = db2.collection;
+  db2.doc = (p) => { const r = realDoc(p); return { ...r, onSnapshot: (n, e) => { subscribes++; return r.onSnapshot(n, e); } }; };
+  db2.collection = (p) => { const c = realCol(p); return { ...c, onSnapshot: (n, e) => { subscribes++; return c.onSnapshot(n, e); } }; };
+  db.failSubscriptions('unavailable');
+  mock.timers.tick(100); await settle();
+  assert.equal(subscribes, 0); // not an instant retry loop
+  await drain(40, 500);
+  assert.equal(subscribes, 3);
+  db.failSubscriptions('unavailable');
+  store.dispose();
+  await drain(40, 500);
+  assert.equal(subscribes, 3);
+});

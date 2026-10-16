@@ -56,21 +56,28 @@ async function connect() {
   if (!c || typeof c.use !== 'function') return;
   const use = (name) => Promise.resolve().then(() => c.use(name)).catch(() => null);
   use('downloads').then((d) => { caps.downloads = d || null; renderDownload(); });
-  let timer, timedOut = false;
-  const timeout = new Promise((resolve) => { timer = setTimeout(() => resolve('timeout'), CONNECT_TIMEOUT_MS); });
-  const attach = (async () => {
-    const [db, user] = await Promise.all([use('db'), use('user')]);
-    if (timedOut) return; // too late: the page stays on the seed, View only
+  // The db attaches as soon as it resolves; `user` may arrive later (or never), so the store gets a
+  // proxy that waits for it. The store starts read-only and stays so until can() answers.
+  const userP = use('user').then((u) => (caps.user = u || null));
+  const lazyUser = {
+    can: async (p) => { const u = await userP; return u ? u.can(p) : null; },
+    id: async () => { const u = await userP; return u ? u.id() : null; },
+  };
+  const attach = use('db').then(async (db) => {
     caps.db = db || null;
-    caps.user = user || null;
-    if (caps.db) {
-      useStore(createStore({ db: caps.db, user: caps.user, seed: seed() }));
-      try { await store.ready; } catch { /* store stays read-only */ }
-    }
-  })();
-  if ((await Promise.race([attach.then(() => 'ok'), timeout])) === 'timeout') timedOut = true;
-  clearTimeout(timer);
-  connecting = false;
+    if (!caps.db) return;
+    useStore(createStore({ db: caps.db, user: lazyUser, seed: seed() }));
+    try { await store.ready; } catch { /* store stays read-only */ }
+  });
+  // The cap only ends "Connecting…" (seed view, View only meanwhile); capabilities still attach when they arrive.
+  let timer;
+  const timeout = new Promise((resolve) => { timer = setTimeout(resolve, CONNECT_TIMEOUT_MS); });
+  try { await Promise.race([attach, timeout]); } finally {
+    clearTimeout(timer);
+    connecting = false;
+    emit(store.getState());
+  }
+  await attach;
   emit(store.getState());
 }
 

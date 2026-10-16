@@ -247,9 +247,12 @@ test('summary at 375 px, light and dark: no page-level horizontal scroll, table 
         wrapScrolls: wrap.scrollWidth > wrap.clientWidth,
         overflow: getComputedStyle(wrap).overflowX,
         sticky: getComputedStyle(document.querySelector('#panel-summary tbody tr[data-row] > :first-child')).position,
+        firstMonthLeft: document.querySelector('#panel-summary thead th:nth-child(2)').getBoundingClientRect().left,
+        secondMonthRight: document.querySelector('#panel-summary thead th:nth-child(3)').getBoundingClientRect().right,
       };
     });
     assert.ok(m.sw <= 375, `scrollWidth ${m.sw}`);
+    assert.ok(m.firstMonthLeft < 375 && m.secondMonthRight <= 375, `month columns not visible: ${m.firstMonthLeft}, ${m.secondMonthRight}`);
     assert.equal(m.overflow, 'auto');
     assert.equal(m.wrapScrolls, true);
     assert.equal(m.sticky, 'sticky');
@@ -303,6 +306,14 @@ test('summary chart: stacked Fixed/Variable bars and Active PODs line on a secon
   assert.equal(c.live, 1);
   assert.equal(c.canvases, 1);
   assert.equal(c.inDom, true);
+  // the tooltip footer reflects the edited data, matching the table's December TOTAL cell
+  const footer = await page.evaluate(() => {
+    const ch = window.__charts.find((x) => !x.destroyed);
+    const items = ch.data.datasets.map((d, i) => ({ dataset: d, datasetIndex: i, dataIndex: 11, parsed: { y: d.data[11] } }));
+    return ch.options.plugins.tooltip.callbacks.footer(items);
+  });
+  const decTotal = await page.$eval('#panel-summary tr[data-row="r47"]', (tr) => tr.cells[12].textContent.trim());
+  assert.equal(footer, `Total: €${decTotal}`);
   assert.deepEqual(page.errors, []);
   await page.close();
 });
@@ -316,6 +327,53 @@ test('connect wait is capped: a can() that never resolves ends in View only, not
   await page.waitForFunction(() => !document.getElementById('badge-view-only').hidden, null, { timeout: 3000 });
   assert.equal(await page.isHidden('#save-status'), true);
   assert.equal(await page.isVisible('#panel-summary .tile'), true);
+  assert.deepEqual(page.errors, []);
+  await page.close();
+});
+
+test('summary at 1280 px: columns are Line | Jan…Dec | Total 2027 and Total 2027 is fully visible', async () => {
+  const page = await openPage();
+  await page.waitForSelector('#panel-summary table');
+  const m = await page.evaluate(() => {
+    const wrap = document.querySelector('#panel-summary .table-scroll');
+    const heads = [...document.querySelectorAll('#panel-summary thead th')];
+    const w = wrap.getBoundingClientRect();
+    return {
+      heads: heads.map((x) => x.textContent.trim()),
+      totalRight: heads[heads.length - 1].getBoundingClientRect().right,
+      visibleRight: w.left + wrap.clientLeft + wrap.clientWidth,
+      scrolls: wrap.scrollWidth > wrap.clientWidth,
+    };
+  });
+  assert.deepEqual(m.heads, ['Line', 'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec', 'Total 2027']);
+  assert.ok(m.totalRight <= m.visibleRight + 0.5, `Total 2027 right ${m.totalRight} > ${m.visibleRight}`);
+  assert.equal(m.scrolls, false);
+  await page.close();
+});
+
+test('capabilities arriving after the connect cap still attach: editor ends editable', async () => {
+  const page = await openPage({ claude: {
+    db: true, user: { can: true, id: 'u1' }, delayMs: 700,
+    script: 'window.__OCP_CONNECT_TIMEOUT_MS = 300;',
+  } });
+  // after the cap, before the capabilities: seed view, View only, no Connecting…
+  await page.waitForFunction(() => !document.getElementById('badge-view-only').hidden, null, { timeout: 3000 });
+  assert.equal(await page.isHidden('#save-status'), true);
+  // then the late db/user attach
+  await page.waitForFunction(() => document.getElementById('badge-view-only').hidden && window.__app.getState().readOnly === false, null, { timeout: 3000 });
+  assert.deepEqual(page.errors, []);
+  await page.close();
+});
+
+test('a use(user) that never resolves does not drop the db: db plan shown, View only', async () => {
+  const page = await openPage({ claude: {
+    db: { docs: { 'plan/inputs': { scalars: {}, monthly: { csLicences: [10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10] } } } },
+    script: 'window.__OCP_CONNECT_TIMEOUT_MS = 300; T.user = new Promise(() => {});',
+  } });
+  await page.waitForFunction(() => window.__app.getState().source === 'db', null, { timeout: 3000 });
+  await page.waitForFunction(() => !document.getElementById('badge-view-only').hidden, null, { timeout: 3000 });
+  assert.equal(await page.evaluate(() => window.__app.getState().readOnly), true);
+  assert.equal(await page.isHidden('#save-status'), true);
   assert.deepEqual(page.errors, []);
   await page.close();
 });

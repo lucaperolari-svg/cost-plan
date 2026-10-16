@@ -138,16 +138,17 @@ h1 { margin: 0; font-size: var(--fs-lg); font-weight: 700; line-height: 1.2; col
 
 .table-scroll { overflow-x: auto; max-width: 100%; border: 1px solid var(--line); border-radius: 4px; }
 .sum-table { border-collapse: separate; border-spacing: 0; width: 100%; font-size: var(--fs-sm); font-variant-numeric: tabular-nums; }
-.sum-table th, .sum-table td { padding: 5px 10px; border-bottom: 1px solid var(--line); white-space: nowrap; text-align: left; font-weight: 400; }
+.sum-table th, .sum-table td { padding: 5px 8px; border-bottom: 1px solid var(--line); white-space: nowrap; text-align: left; font-weight: 400; }
 .sum-table thead th { font-size: var(--fs-xs); font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; background: var(--surface); }
 .sum-table .num { text-align: right; }
 .sum-table .zero { color: var(--muted); }
 .sum-table .col-label {
   position: sticky; left: 0; z-index: 1; background: var(--surface);
-  min-width: 15rem; max-width: 22rem; white-space: normal; box-shadow: 1px 0 0 var(--line);
+  width: 15rem; min-width: 13rem; max-width: 16rem; white-space: normal; box-shadow: 1px 0 0 var(--line);
 }
+.row-label { display: block; line-height: 1.35; }
+.tags { display: flex; flex-wrap: wrap; gap: 3px 4px; margin-top: 3px; }
 .sum-table .col-total { font-weight: 600; border-left: 1px solid var(--line); }
-.sum-table .col-tags { white-space: nowrap; }
 .sum-table tbody tr:hover > * { background-image: linear-gradient(var(--hover), var(--hover)); }
 .sum-section > * { background: var(--bg) !important; padding-top: 12px; }
 .sum-section > th { font-size: var(--fs-xs); font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: var(--petrol-ink); }
@@ -156,8 +157,8 @@ h1 { margin: 0; font-size: var(--fs-lg); font-weight: 700; line-height: 1.2; col
 .sum-total > * { font-weight: 700 !important; border-top: 2px solid var(--ink); border-bottom: 2px solid var(--ink); background: var(--total-bg) !important; }
 .sum-aggregate > th, .sum-keyFigure > th, .sum-unitEconomics > th { padding-left: 10px; }
 .tag {
-  display: inline-flex; align-items: center; gap: 5px; padding: 1px 7px; margin-right: 4px; border-radius: 999px;
-  background: var(--badge-bg); color: var(--badge-fg); font-size: 0.6875rem; font-weight: 600; line-height: 1.5;
+  display: inline-flex; align-items: center; gap: 4px; padding: 0 6px; border-radius: 999px; white-space: nowrap;
+  background: var(--badge-bg); color: var(--badge-fg); font-size: 0.625rem; font-weight: 600; line-height: 1.6;
 }
 .tag-fv::before { content: ""; width: 7px; height: 7px; border-radius: 2px; background: var(--petrol-mark); }
 .tag-variable::before { background: var(--yellow); }
@@ -173,7 +174,8 @@ h1 { margin: 0; font-size: var(--fs-lg); font-weight: 700; line-height: 1.2; col
   .tile-value { font-size: 1.25rem; }
   .card { padding: 12px; }
   .chart-wrap { height: 240px; }
-  .sum-table .col-label { min-width: 9.5rem; max-width: 11rem; }
+  .sum-table th, .sum-table td { padding: 4px 6px; }
+  .sum-table .col-label { width: 8.5rem; min-width: 8.5rem; max-width: 8.5rem; font-size: var(--fs-xs); }
 }
 @media (prefers-reduced-motion: reduce) {
   * { transition: none !important; animation: none !important; }

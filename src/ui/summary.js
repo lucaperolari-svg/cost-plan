@@ -43,7 +43,6 @@ function build(container) {
   const tableBody = h('tbody');
   const head = h('thead', {}, h('tr', {},
     h('th', { scope: 'col', class: 'col-label' }, 'Line'),
-    h('th', { scope: 'col', class: 'col-tags' }, 'Bucket · F/V'),
     MONTHS.map((m) => h('th', { scope: 'col', class: 'num' }, m)),
     h('th', { scope: 'col', class: 'num col-total' }, 'Total 2027')));
   const root = h('div', { class: 'summary' },
@@ -83,7 +82,7 @@ function tiles(result) {
 function sectionRow(label) {
   return h('tr', { class: 'sum-section' },
     h('th', { scope: 'rowgroup', class: 'col-label' }, label),
-    h('td', { colspan: String(MONTHS.length + 2) }));
+    h('td', { colspan: String(MONTHS.length + 1) }));
 }
 
 function tags(r) {
@@ -105,8 +104,9 @@ function tableRows(rows) {
     const f = CELL[r.format] ?? fmt.int;
     const cell = (n, cls = 'num') => h('td', { class: n === 0 ? `${cls} zero` : cls }, f(n));
     out.push(h('tr', { class: `sum-${r.kind}`, dataset: { row: r.row, kind: r.kind } },
-      h('th', { scope: 'row', class: 'col-label' }, r.label),
-      h('td', { class: 'col-tags' }, tags(r)),
+      h('th', { scope: 'row', class: 'col-label' },
+        h('span', { class: 'row-label' }, r.label),
+        r.kind === 'line' ? h('span', { class: 'tags' }, tags(r)) : null),
       r.monthly.map((n) => cell(n)),
       cell(r.total, 'num col-total')));
   }
@@ -153,7 +153,11 @@ function chartConfig(result, c) {
           padding: 10, usePointStyle: true, titleFont: { family: c.font }, bodyFont: { family: c.font }, footerFont: { family: c.font },
           callbacks: {
             label: (ctx) => (ctx.dataset.yAxisID === 'y2' ? ` ${ctx.dataset.label}: ${fmt.int(ctx.parsed.y)}` : ` ${ctx.dataset.label}: ${fmt.eur(ctx.parsed.y)}`),
-            footer: (items) => { const i = items[0]?.dataIndex; return i === undefined ? '' : `Total: ${fmt.eur(fixed[i] + variable[i])}`; },
+            // from the hovered items, so it never goes stale after an in-place data update
+            footer: (items) => {
+              const bars = items.filter((it) => it.dataset.yAxisID === 'y');
+              return bars.length ? `Total: ${fmt.eur(bars.reduce((t, it) => t + it.parsed.y, 0))}` : '';
+            },
           },
         },
       },
@@ -178,7 +182,8 @@ function renderChart(v, result) {
   }
   const config = chartConfig(result, themeColors(v.chartBox));
   if (v.chart && v.canvas && v.chartBox.contains(v.canvas)) {
-    v.chart.data.datasets.forEach((d, i) => { d.data = config.data.datasets[i].data; Object.assign(d, { borderRadius: config.data.datasets[i].borderRadius }); });
+    v.chart.data.datasets.forEach((d, i) => { d.data = config.data.datasets[i].data; d.borderRadius = config.data.datasets[i].borderRadius; });
+    v.chart.options = config.options; // fresh theme colours and callbacks
     v.chart.update('none');
     return;
   }

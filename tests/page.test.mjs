@@ -530,3 +530,62 @@ test('inputs at 375 px, light and dark: no page-level horizontal scroll, monthly
     await page.close();
   }
 });
+
+test('inputs: ambiguous thousands-or-decimal entries are not written; 0,014 is', async () => {
+  const page = await openInputs();
+  // as a user does it (click, select all, type): Playwright's fill() selects before focusing, which the
+  // raw-on-focus swap of "2,000" -> "2000" cannot see
+  await page.click(field('yearEndCustomerTarget'));
+  await page.keyboard.press('ControlOrMeta+a');
+  await page.keyboard.type('2,000');
+  await page.locator(field('yearEndCustomerTarget')).blur();
+  const msg = await page.textContent('#panel-inputs [data-row="yearEndCustomerTarget"] .field-msg');
+  assert.match(msg, /Ambiguous: 2000 or 2\?/);
+  assert.match(msg, /not saved/);
+  assert.equal(await fieldValue(page, 'yearEndCustomerTarget'), '2,000');
+  await page.fill(field('newCustomers:6'), '8.334');
+  await page.locator(field('newCustomers:6')).blur();
+  assert.match(await page.textContent('#panel-inputs [data-series-msg]'), /Ambiguous: 8334 or 8\.334\?.*not saved/);
+  assert.match(await page.getAttribute(field('newCustomers:6'), 'class'), /is-error/);
+  // the stored value is first changed remotely, so typing 0,014 is a real edit
+  await page.evaluate(() => window.__test.db.remote('update', 'plan/inputs', { scalars: { inboundCallPricePerMinute: 0.02 } }));
+  await page.waitForFunction((sel) => document.querySelector(sel).value === '0.02', field('inboundCallPricePerMinute'));
+  await page.fill(field('inboundCallPricePerMinute'), '0,014');
+  await page.locator(field('inboundCallPricePerMinute')).blur();
+  await page.waitForTimeout(900);
+  const ws = await page.evaluate(() => window.__test.db.writes.filter((w) => w.path === 'plan/inputs').map((w) => w.data));
+  assert.ok(ws.some((d) => d.scalars?.inboundCallPricePerMinute === 0.014));
+  assert.ok(!ws.some((d) => d.scalars && 'yearEndCustomerTarget' in d.scalars));
+  assert.ok(!ws.some((d) => d.monthly));
+  assert.equal(await page.$eval('#panel-inputs [data-row="inboundCallPricePerMinute"] .field-msg', (e) => e.hidden), true);
+  assert.equal(await fieldValue(page, 'inboundCallPricePerMinute'), '0.014');
+  assert.deepEqual(page.errors, []);
+  await page.close();
+});
+
+test('inputs: a blocked negative value is marked not saved; clearing the field then writes null', async () => {
+  const page = await openInputs();
+  await page.fill(field('costPerAiCall'), '-3');
+  await page.locator(field('costPerAiCall')).blur();
+  const msg = () => page.textContent('#panel-inputs [data-row="costPerAiCall"] .field-msg');
+  assert.match(await msg(), /below 0.*not saved/);
+  await page.fill(field('costPerAiCall'), '');
+  await page.locator(field('costPerAiCall')).blur();
+  await page.waitForFunction(() => window.__test.db.writes.some((w) => w.path === 'plan/inputs' && w.data.scalars && 'costPerAiCall' in w.data.scalars), null, { timeout: 1500 });
+  const ws = await page.evaluate(() => window.__test.db.writes.filter((w) => w.path === 'plan/inputs' && w.data.scalars && 'costPerAiCall' in w.data.scalars).map((w) => w.data.scalars.costPerAiCall));
+  assert.deepEqual(ws, [null]);
+  assert.doesNotMatch(await msg(), /not saved/);
+  await page.close();
+});
+
+test('inputs: tabbing into a grouped field and typing replaces the value (raw-on-focus keeps the selection)', async () => {
+  const page = await openInputs();
+  await page.focus(field('csLicences:11'));
+  await page.keyboard.press('Tab');
+  assert.equal(await page.evaluate(() => document.activeElement.dataset.key), 'yearEndCustomerTarget');
+  await page.keyboard.type('2500');
+  assert.equal(await fieldValue(page, 'yearEndCustomerTarget'), '2500');
+  await page.keyboard.press('Enter');
+  await page.waitForFunction(() => window.__test.db.writes.some((w) => w.data?.scalars?.yearEndCustomerTarget === 2500), null, { timeout: 1500 });
+  await page.close();
+});

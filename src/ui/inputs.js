@@ -5,7 +5,7 @@
 // survive re-renders. The focused input, and any input with uncommitted text, is never overwritten.
 // Typing updates this tab's derived values and checks at once (a local draft overlay on top of state);
 // the value is written with actions.setScalar / setMonthly on blur or Enter. Escape drops the draft.
-import { parseNumber, isShare, formatShare, validateInputs } from '../validate.js';
+import { parseNumber, isShare, formatShare, validateInputs, ambiguousNumber } from '../validate.js';
 import { deriveInputs } from '../calc.js';
 import { h, fmt } from './dom.js';
 
@@ -34,6 +34,13 @@ const raw = (v, share) => (isBlank(v) ? '' : !Number.isFinite(Number(v)) ? Strin
 // text -> null (empty) | NaN (not a number) | number
 const parseField = (text, share) => (text.trim() === '' ? null : parseNumber(text, { share }) ?? NaN);
 const outOfRange = (n, share) => typeof n === 'number' && (n < 0 || (share && n > 1));
+// non-share fields only: '8,334' could be 8334 or 8.334, so it is refused with both readings
+const ambiguity = (text, share) => {
+  const a = !share && ambiguousNumber(text);
+  return a ? `Ambiguous: ${a.integer} or ${a.decimal}? Type ${a.integer}, or ${a.decimal.toFixed(4)} for decimals` : null;
+};
+const blocked = (text, share) => { const n = parseField(text, share); return Number.isNaN(n) || outOfRange(n, share) || !!ambiguity(text, share); };
+const NOT_SAVED = ' — not saved';
 const monthlyKey = (name, i) => `${name}:${i}`;
 const splitKey = (key) => { const [name, i] = key.split(':'); return { name, index: Number(i) }; };
 
@@ -64,8 +71,8 @@ function overlay(inputs, drafts, specs, { validOnly }) {
   };
   for (const [key, text] of drafts) {
     const spec = specs.get(key);
-    const n = parseField(text, spec.share);
-    if (validOnly && (Number.isNaN(n) || outOfRange(n, spec.share))) continue;
+    const n = ambiguity(text, spec.share) ? NaN : parseField(text, spec.share);
+    if (validOnly && blocked(text, spec.share)) continue;
     if (spec.series) out.monthly[spec.series][spec.index] = n;
     else out.scalars.find((s) => s.key === key).value = n;
   }
@@ -80,9 +87,12 @@ function stateValue(v, key) {
 function commit(v, key) {
   if (!v.drafts.has(key)) return;
   const spec = v.specs.get(key);
-  const n = parseField(v.drafts.get(key), spec.share);
-  if (Number.isNaN(n) || outOfRange(n, spec.share)) { update(v); return; } // keep the text and its error, write nothing
+  const text = v.drafts.get(key);
+  // keep the text and its error, write nothing, mark it not saved
+  if (blocked(text, spec.share)) { v.rejected.add(key); update(v); return; }
+  const n = parseField(text, spec.share);
   v.drafts.delete(key);
+  v.rejected.delete(key);
   const current = stateValue(v, key);
   const same = (isBlank(current) && n === null) || (n !== null && !isBlank(current) && Number(current) === n);
   if (!same && !v.state.readOnly) {
@@ -95,13 +105,20 @@ function commit(v, key) {
 function wire(v, input, key) {
   input.addEventListener('focus', () => {
     v.focused = key;
-    if (!v.drafts.has(key)) input.value = raw(stateValue(v, key), v.specs.get(key).share);
+    if (v.drafts.has(key)) return;
+    const next = raw(stateValue(v, key), v.specs.get(key).share);
+    if (input.value === next) return;
+    // swapping "8,334" for "8334" must keep a select-all (Tab focus, select-then-type), or typing would append
+    const all = input.value.length > 0 && input.selectionStart === 0 && input.selectionEnd === input.value.length;
+    input.value = next;
+    if (all) input.select();
   });
-  input.addEventListener('input', () => { v.drafts.set(key, input.value); update(v); });
+  input.addEventListener('input', () => { v.drafts.set(key, input.value); v.rejected.delete(key); update(v); });
   input.addEventListener('keydown', (e) => {
     if (e.key === 'Enter') { e.preventDefault(); commit(v, key); }
     else if (e.key === 'Escape' && v.drafts.has(key)) {
       v.drafts.delete(key);
+      v.rejected.delete(key);
       input.value = raw(stateValue(v, key), v.specs.get(key).share);
       update(v);
     }
@@ -116,16 +133,17 @@ function wire(v, input, key) {
 // --- build (once per container)
 function field(v, key, attrs) {
   const input = h('input', {
-    type: 'text', inputmode: 'decimal', autocomplete: 'off', spellcheck: 'false',
+    type: 'text', inputmode: 'decimal', autocomplete: 'off',
     class: 'in-input', dataset: { key }, placeholder: 'not filled', ...attrs,
   });
+  input.spellcheck = false;
   v.fields.set(key, input);
   wire(v, input, key);
   return input;
 }
 
 function build(container, state) {
-  const v = { root: null, fields: new Map(), specs: new Map(), msgs: new Map(), rows: new Map(), derived: new Map(), drafts: new Map(), focused: null, state, actions: null };
+  const v = { root: null, fields: new Map(), specs: new Map(), msgs: new Map(), rows: new Map(), derived: new Map(), drafts: new Map(), rejected: new Set(), focused: null, state, actions: null };
   let uid = 0;
   const id = (p) => `in-${p}-${++uid}`;
 
@@ -147,7 +165,7 @@ function build(container, state) {
       cells, h('td', { class: 'num col-total' }, total));
   }));
   const vsTarget = h('p', { class: 'in-check', dataset: { check: 'newCustomersVsTarget' }, role: 'status' });
-  const seriesMsg = h('p', { class: 'field-msg', hidden: true });
+  const seriesMsg = h('p', { class: 'field-msg', hidden: true, dataset: { seriesMsg: '' } });
   v.derived.set('newCustomersVsTarget', vsTarget);
   v.msgs.set('series', seriesMsg);
   const sectionA = h('section', { class: 'card', 'aria-labelledby': 'in-a-title' },
@@ -193,7 +211,7 @@ function build(container, state) {
     sectionA,
     h('div', { class: 'in-b-head' },
       h('h2', { class: 'in-b-title' }, 'B · Assumptions'),
-      h('p', { class: 'card-note' }, 'Shares are entered in %. Decimal comma or point both work (1,5 or 1.5). Empty fields count as 0 and are marked “not filled”. Changes save when you leave the field or press Enter; Esc undoes typing.')),
+      h('p', { class: 'card-note' }, 'Shares are entered in %. Type whole numbers without thousands separators (8334); decimal comma or point both work (1,5 or 1.5). Empty fields count as 0 and are marked “not filled”. Changes save when you leave the field or press Enter; Esc undoes typing.')),
     h('div', { class: 'in-sections' }, cards));
   container.replaceChildren(v.root);
   return v;
@@ -213,9 +231,9 @@ function derivedRow(v, d, id) {
 }
 
 // --- update (every state change and every keystroke)
-function setMsg(el, issue) {
+function setMsg(el, issue, notSaved) {
   el.hidden = !issue;
-  el.textContent = issue ? (issue.level === 'empty' ? 'Not filled: counted as 0' : issue.message) : '';
+  el.textContent = issue ? (issue.level === 'empty' ? 'Not filled: counted as 0' : issue.message) + (notSaved ? NOT_SAVED : '') : '';
   el.className = `field-msg${issue ? ` is-${issue.level}` : ''}`;
 }
 
@@ -226,19 +244,23 @@ function update(v) {
   const top = new Map();
   for (const is of validateInputs(checked)) if (!top.has(is.key) || LEVEL[is.level] > LEVEL[top.get(is.key).level]) top.set(is.key, is);
 
+  const cellMsgs = []; // ambiguous monthly cells
   for (const [key, input] of v.fields) {
     const spec = specs.get(key);
     const committed = stateValue(v, key);
     input.disabled = !!state.readOnly;
     if (!drafts.has(key) && v.focused !== key) input.value = display(committed, spec.share);
     const n = drafts.has(key) ? parseField(drafts.get(key), spec.share) : committed;
-    const cellError = spec.series ? (Number.isNaN(n) || (typeof n === 'number' && n < 0)) : top.get(key)?.level === 'error';
+    const amb = drafts.has(key) ? ambiguity(drafts.get(key), spec.share) : null;
+    const cellError = !!amb || (spec.series ? (Number.isNaN(n) || (typeof n === 'number' && n < 0)) : top.get(key)?.level === 'error');
     const empty = !cellError && isBlank(n);
     input.classList.toggle('is-error', cellError);
     input.classList.toggle('is-empty', empty);
     input.classList.toggle('is-draft', drafts.has(key));
     if (cellError) input.setAttribute('aria-invalid', 'true'); else input.removeAttribute('aria-invalid');
-    if (!spec.series) setMsg(v.msgs.get(key), top.get(key));
+    const issue = amb ? { level: 'error', message: amb } : top.get(key);
+    if (!spec.series) setMsg(v.msgs.get(key), issue, v.rejected.has(key));
+    else if (amb) cellMsgs.push(`${SERIES.find((x) => x.name === spec.series).label}, ${MONTHS[spec.index]}: ${amb}`);
   }
 
   // derived values and checks, from the preview
@@ -266,8 +288,11 @@ function update(v) {
   // series-level messages (errors first, then not filled)
   const seriesIssues = SERIES.map((s) => top.get(s.name) && top.get(s.name).level !== 'warning' ? { ...top.get(s.name), label: s.label } : null).filter(Boolean)
     .sort((a, b) => LEVEL[b.level] - LEVEL[a.level]);
+  const msgs = cellMsgs.length ? cellMsgs : seriesIssues.map((i) => `${i.label}: ${i.message}`);
+  const level = cellMsgs.length ? 'error' : seriesIssues[0]?.level;
+  const unsaved = [...v.rejected].some((k) => specs.get(k)?.series);
   const sm = v.msgs.get('series');
-  sm.hidden = !seriesIssues.length;
-  sm.textContent = seriesIssues.map((i) => `${i.label}: ${i.message}`).join(' · ');
-  sm.className = `field-msg${seriesIssues.length ? ` is-${seriesIssues[0].level}` : ''}`;
+  sm.hidden = !msgs.length;
+  sm.textContent = msgs.join(' · ') + (msgs.length && unsaved ? NOT_SAVED : '');
+  sm.className = `field-msg${level ? ` is-${level}` : ''}`;
 }

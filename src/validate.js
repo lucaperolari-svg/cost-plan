@@ -16,6 +16,13 @@ export function parseNumber(text, { share = false } = {}) {
   return share ? n / 100 : n;
 }
 
+// '8,334' / '8.334' / '2,000': thousands or decimal? -> {integer, decimal}, else null.
+// A zero integer part ('0,014') is never ambiguous. parseNumber's rule is unchanged; callers decide.
+export function ambiguousNumber(text) {
+  const m = typeof text === 'string' && /^([1-9]\d{0,2})[.,](\d{3})$/.exec(text.replace(/[\s\u00a0]/g, ''));
+  return m ? { integer: Number(m[1] + m[2]), decimal: Number(`${m[1]}.${m[2]}`) } : null;
+}
+
 export const isShare = (scalar) => String(scalar?.unit ?? '').startsWith('%');
 
 // 0.77 -> '77%', 0.017 -> '1.7%'

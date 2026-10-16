@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { parseNumber, isShare, validateInputs, formatShare } from '../src/validate.js';
+import { parseNumber, isShare, validateInputs, formatShare, ambiguousNumber } from '../src/validate.js';
 
 const seed = () => JSON.parse(readFileSync(new URL('../data/inputs.json', import.meta.url)));
 const withScalar = (key, value) => {
@@ -89,4 +89,12 @@ test('validateInputs: monthly checks', () => {
 test('validateInputs: tolerates missing parts', () => {
   assert.doesNotThrow(() => validateInputs({}));
   assert.doesNotThrow(() => validateInputs({ scalars: [], monthly: {} }));
+});
+
+test('ambiguousNumber: a lone separator before exactly 3 digits with a 1-3 digit non-zero integer part', () => {
+  for (const t of ['2,000', '8,334', '8.334', ' 8.334 ', '999,999', '1,000'])
+    assert.ok(ambiguousNumber(t), t);
+  assert.deepEqual(ambiguousNumber('8,334'), { integer: 8334, decimal: 8.334 });
+  for (const t of ['0,014', '0,0031', '0.500', '1,5', '1.25', '8334', '8,3340', '1.234,56', '1,234.56', '1234,567', '15%', '', 'abc', '-8,334'])
+    assert.equal(ambiguousNumber(t), null, t);
 });

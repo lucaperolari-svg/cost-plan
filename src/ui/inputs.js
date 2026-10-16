@@ -5,9 +5,10 @@
 // survive re-renders. The focused input, and any input with uncommitted text, is never overwritten.
 // Typing updates this tab's derived values and checks at once (a local draft overlay on top of state);
 // the value is written with actions.setScalar / setMonthly on blur or Enter. Escape drops the draft.
-import { parseNumber, isShare, formatShare, validateInputs, ambiguousNumber } from '../validate.js';
+import { isShare, formatShare, validateInputs } from '../validate.js';
 import { deriveInputs } from '../calc.js';
 import { h, fmt } from './dom.js';
+import { createFieldSet, numberInput, isBlank, clean, grouped, parseField, ambiguity, blocked, NOT_SAVED } from './fields.js';
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 const SERIES = [
@@ -24,23 +25,6 @@ const DERIVED = [
 const AI_HUMAN_CHECK = 'AI + human share above 100%';
 const LEVEL = { error: 3, warning: 2, empty: 1 };
 
-const isBlank = (v) => v === null || v === undefined || v === '';
-const clean = (n) => Number(n.toPrecision(12)); // drop float noise such as 0.30000000000000004
-const grouped = new Intl.NumberFormat('en-IE', { maximumFractionDigits: 6 });
-// shown when the field is not focused: shares as %, others with grouping
-const display = (v, share) => (isBlank(v) ? '' : !Number.isFinite(Number(v)) ? String(v) : share ? formatShare(Number(v)) : grouped.format(clean(Number(v))));
-// shown while editing: no grouping, so the text parses back to the same number
-const raw = (v, share) => (isBlank(v) ? '' : !Number.isFinite(Number(v)) ? String(v) : share ? formatShare(Number(v)) : String(clean(Number(v))));
-// text -> null (empty) | NaN (not a number) | number
-const parseField = (text, share) => (text.trim() === '' ? null : parseNumber(text, { share }) ?? NaN);
-const outOfRange = (n, share) => typeof n === 'number' && (n < 0 || (share && n > 1));
-// non-share fields only: '8,334' could be 8334 or 8.334, so it is refused with both readings
-const ambiguity = (text, share) => {
-  const a = !share && ambiguousNumber(text);
-  return a ? `Ambiguous: ${a.integer} or ${a.decimal}? Type ${a.integer}, or ${a.decimal.toFixed(4)} for decimals` : null;
-};
-const blocked = (text, share) => { const n = parseField(text, share); return Number.isNaN(n) || outOfRange(n, share) || !!ambiguity(text, share); };
-const NOT_SAVED = ' — not saved';
 const monthlyKey = (name, i) => `${name}:${i}`;
 const splitKey = (key) => { const [name, i] = key.split(':'); return { name, index: Number(i) }; };
 
@@ -84,66 +68,27 @@ function stateValue(v, key) {
   return spec.series ? v.state.inputs.monthly[spec.series]?.[spec.index] : v.state.inputs.scalars.find((s) => s.key === key)?.value;
 }
 
-function commit(v, key) {
-  if (!v.drafts.has(key)) return;
-  const spec = v.specs.get(key);
-  const text = v.drafts.get(key);
-  // keep the text and its error, write nothing, mark it not saved
-  if (blocked(text, spec.share)) { v.rejected.add(key); update(v); return; }
-  const n = parseField(text, spec.share);
-  v.drafts.delete(key);
-  v.rejected.delete(key);
-  const current = stateValue(v, key);
-  const same = (isBlank(current) && n === null) || (n !== null && !isBlank(current) && Number(current) === n);
-  if (!same && !v.state.readOnly) {
-    if (spec.series) v.actions.setMonthly(spec.series, spec.index, n);
-    else v.actions.setScalar(key, n);
-  }
-  update(v);
-}
-
-function wire(v, input, key) {
-  input.addEventListener('focus', () => {
-    v.focused = key;
-    if (v.drafts.has(key)) return;
-    const next = raw(stateValue(v, key), v.specs.get(key).share);
-    if (input.value === next) return;
-    // swapping "8,334" for "8334" must keep a select-all (Tab focus, select-then-type), or typing would append
-    const all = input.value.length > 0 && input.selectionStart === 0 && input.selectionEnd === input.value.length;
-    input.value = next;
-    if (all) input.select();
-  });
-  input.addEventListener('input', () => { v.drafts.set(key, input.value); v.rejected.delete(key); update(v); });
-  input.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter') { e.preventDefault(); commit(v, key); }
-    else if (e.key === 'Escape' && v.drafts.has(key)) {
-      v.drafts.delete(key);
-      v.rejected.delete(key);
-      input.value = raw(stateValue(v, key), v.specs.get(key).share);
-      update(v);
-    }
-  });
-  input.addEventListener('blur', () => {
-    commit(v, key);
-    if (v.focused === key) v.focused = null;
-    update(v);
-  });
-}
-
 // --- build (once per container)
 function field(v, key, attrs) {
-  const input = h('input', {
-    type: 'text', inputmode: 'decimal', autocomplete: 'off',
-    class: 'in-input', dataset: { key }, placeholder: 'not filled', ...attrs,
-  });
-  input.spellcheck = false;
-  v.fields.set(key, input);
-  wire(v, input, key);
-  return input;
+  return v.f.wire(numberInput(key, attrs), key);
 }
 
 function build(container, state) {
-  const v = { root: null, fields: new Map(), specs: new Map(), msgs: new Map(), rows: new Map(), derived: new Map(), drafts: new Map(), rejected: new Set(), focused: null, state, actions: null };
+  const v = { root: null, specs: new Map(), msgs: new Map(), rows: new Map(), derived: new Map(), state, actions: null };
+  v.f = createFieldSet({
+    spec: (key) => v.specs.get(key),
+    value: (key) => stateValue(v, key),
+    readOnly: () => !!v.state.readOnly,
+    update: () => update(v),
+    write: (key, n) => {
+      const spec = v.specs.get(key);
+      if (spec.series) v.actions.setMonthly(spec.series, spec.index, n);
+      else v.actions.setScalar(key, n);
+    },
+  });
+  v.fields = v.f.inputs;
+  v.drafts = v.f.drafts;
+  v.rejected = v.f.rejected;
   let uid = 0;
   const id = (p) => `in-${p}-${++uid}`;
 
@@ -247,11 +192,9 @@ function update(v) {
   const cellMsgs = []; // ambiguous monthly cells
   for (const [key, input] of v.fields) {
     const spec = specs.get(key);
-    const committed = stateValue(v, key);
     input.disabled = !!state.readOnly;
-    if (!drafts.has(key) && v.focused !== key) input.value = display(committed, spec.share);
-    const n = drafts.has(key) ? parseField(drafts.get(key), spec.share) : committed;
-    const amb = drafts.has(key) ? ambiguity(drafts.get(key), spec.share) : null;
+    v.f.sync(key);
+    const { n, amb } = v.f.status(key);
     const cellError = !!amb || (spec.series ? (Number.isNaN(n) || (typeof n === 'number' && n < 0)) : top.get(key)?.level === 'error');
     const empty = !cellError && isBlank(n);
     input.classList.toggle('is-error', cellError);

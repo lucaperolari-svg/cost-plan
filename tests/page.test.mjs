@@ -589,3 +589,212 @@ test('inputs: tabbing into a grouped field and typing replaces the value (raw-on
   await page.waitForFunction(() => window.__test.db.writes.some((w) => w.data?.scalars?.yearEndCustomerTarget === 2500), null, { timeout: 1500 });
   await page.close();
 });
+
+// --- Personnel tab (Task 8)
+const pf = (key) => `#panel-personnel [data-key="${key}"]`;
+const pfValue = (page, key) => page.$eval(pf(key), (e) => e.value);
+const roleWrites = (page) => page.evaluate(() => window.__test.db.writes.filter((w) => w.path.startsWith('roles/')));
+const summaryTotal = (page, row) => page.$eval(`#panel-summary tr[data-row="${row}"]`, (tr) => tr.cells[13].textContent.trim());
+const typeInto = async (page, sel, text) => { await page.click(sel); await page.keyboard.press('ControlOrMeta+a'); await page.keyboard.type(text); };
+async function openPersonnel(opts = {}) {
+  const page = await openPage({ claude: { db: { docs: seededDocs() }, user: { can: true, id: 'u1' } }, ...opts });
+  await page.getByRole('tab', { name: 'Personnel' }).click();
+  await page.waitForSelector('#panel-personnel tr[data-role="R13"]');
+  if (opts.editable !== false) await page.waitForFunction(() => window.__app.getState().readOnly === false && window.__app.getState().source === 'db');
+  return page;
+}
+
+test('personnel: 13 role rows with fields, R13 total 84,700, department totals Operations & Service 519,700', async () => {
+  const page = await openPersonnel();
+  assert.equal(await page.$$eval('#panel-personnel tr[data-role]', (e) => e.length), 13);
+  assert.equal(await page.$eval('#panel-personnel tr[data-role="R13"] [data-total="cost"]', (e) => e.textContent.trim()), '84,700');
+  assert.equal(await pfValue(page, 'R03:quarterlyCostAt1Fte'), '16,750');
+  assert.equal(await pfValue(page, 'R03:oneOffHiringFee'), '10,000');
+  assert.equal(await pfValue(page, 'R03:fte'), '1');
+  assert.equal(await pfValue(page, 'R03:start'), '2027-04-01');
+  assert.equal(await pfValue(page, 'R03:end'), '');
+  assert.equal(await pfValue(page, 'R03:department'), 'Customer Service');
+  assert.deepEqual(await page.$$eval(`${pf('R03:department')} option`, (o) => o.map((x) => x.value)), personnelSeed.departments);
+  assert.equal(await page.$eval('#panel-personnel tr[data-dept="Operations & Service"][data-measure="cost"] .col-total', (e) => e.textContent.trim()), '519,700');
+  assert.deepEqual(page.errors, []);
+  await page.close();
+});
+
+test('personnel: department totals (cost) equal the Summary personnel lines, FTE total equals the Summary FTE row', async () => {
+  const page = await openPersonnel();
+  const cells = (sel) => page.$eval(sel, (tr) => [...tr.cells].slice(1).map((c) => c.textContent.trim()));
+  for (const [i, dep] of ['Operations & Service', 'Billing & Invoicing', 'Customer Service', 'Pricing & Risk Management', 'Switching & Metering'].entries()) {
+    assert.deepEqual(await cells(`#panel-personnel tr[data-dept="${dep}"][data-measure="cost"]`), await cells(`#panel-summary tr[data-row="r${40 + i}"]`), dep);
+  }
+  assert.deepEqual(await cells('#panel-personnel tr[data-dept="total"][data-measure="cost"]'), await cells('#panel-summary tr[data-row="r45"]'));
+  assert.deepEqual(await cells('#panel-personnel tr[data-dept="total"][data-measure="fte"]'), await cells('#panel-summary tr[data-row="r66"]'));
+  // per-role monthly values: R03 starts in April, so Jan-Mar are 0 and April books the hiring fee
+  const r03 = await page.$eval('#panel-personnel tr[data-role-monthly="R03"][data-measure="cost"]', (tr) => [...tr.cells].slice(1).map((c) => c.textContent.trim()));
+  assert.deepEqual(r03.slice(0, 4), ['0', '0', '0', '15,583']);
+  await page.close();
+});
+
+test('personnel: Add role (Customer Service, 2027-07-01, FTE 1, 9,000 a quarter) raises the Summary line by 18,000 and writes roles/R14', async () => {
+  const page = await openPersonnel();
+  const before = Number((await summaryTotal(page, 'r42')).replace(/,/g, ''));
+  await page.getByRole('button', { name: 'Add role' }).click();
+  await page.waitForSelector(pf('R14:role'));
+  assert.equal(await page.evaluate(() => document.activeElement.dataset.key), 'R14:role');
+  await page.keyboard.type('Customer Service Agent');
+  await page.keyboard.press('Enter');
+  await page.selectOption(pf('R14:department'), 'Customer Service');
+  await page.fill(pf('R14:start'), '2027-07-01');
+  await page.locator(pf('R14:start')).blur();
+  assert.equal(await pfValue(page, 'R14:fte'), '1');
+  await typeInto(page, pf('R14:quarterlyCostAt1Fte'), '9000');
+  await page.keyboard.press('Enter');
+  await page.waitForFunction((b) => Number(document.querySelector('#panel-summary tr[data-row="r42"]').cells[13].textContent.replace(/,/g, '')) === b + 18000, before, { timeout: 2000 });
+  await page.waitForFunction(() => {
+    const d = window.__test.db.docs.get('roles/R14');
+    return d && d.department === 'Customer Service' && d.start === '2027-07-01' && d.fte === 1 && d.quarterlyCostAt1Fte === 9000 && d.end === null && d.role === 'Customer Service Agent';
+  }, null, { timeout: 2000 });
+  assert.equal(await page.$$eval('#panel-personnel tr[data-role]', (e) => e.length), 14);
+  assert.equal(await page.$eval('#panel-personnel tr[data-role="R14"] [data-total="cost"]', (e) => e.textContent.trim()), '18,000');
+  assert.deepEqual(page.errors, []);
+  await page.close();
+});
+
+test('personnel: delete asks for confirmation first, then removes the row and writes the delete', async () => {
+  const page = await openPersonnel();
+  const btn = '#panel-personnel [data-delete="R13"]';
+  await page.click(btn);
+  assert.equal((await page.textContent(btn)).trim(), 'Confirm delete');
+  await page.waitForTimeout(200);
+  assert.equal((await roleWrites(page)).length, 0);
+  assert.equal(await page.$$eval('#panel-personnel tr[data-role]', (e) => e.length), 13);
+  await page.click(btn);
+  await page.waitForFunction(() => !document.querySelector('#panel-personnel tr[data-role="R13"]'));
+  await page.waitForFunction(() => window.__test.db.writes.some((w) => w.op === 'delete' && w.path === 'roles/R13'), null, { timeout: 1500 });
+  assert.equal(await page.$$eval('#panel-personnel tr[data-role]', (e) => e.length), 12);
+  // Operations & Service drops by R13's 84,700
+  assert.equal(await page.$eval('#panel-personnel tr[data-dept="Operations & Service"][data-measure="cost"] .col-total', (e) => e.textContent.trim()), '435,000');
+  assert.equal(await summaryTotal(page, 'r40'), '435,000');
+  assert.deepEqual(page.errors, []);
+  await page.close();
+});
+
+test('personnel: an unconfirmed delete reverts after a few seconds', async () => {
+  const page = await openPersonnel();
+  const btn = '#panel-personnel [data-delete="R12"]';
+  await page.click(btn);
+  assert.equal((await page.textContent(btn)).trim(), 'Confirm delete');
+  await page.waitForFunction((s) => document.querySelector(s).textContent.trim() === 'Delete', btn, { timeout: 6000 });
+  assert.equal((await roleWrites(page)).length, 0);
+  await page.close();
+});
+
+test('personnel: end date before start date warns (fee still booked, decision 1); blank start warns not counted', async () => {
+  const page = await openPersonnel();
+  // R03: start 2027-04-01, fee 10,000
+  await page.fill(pf('R03:end'), '2027-03-01');
+  await page.locator(pf('R03:end')).blur();
+  await page.waitForFunction(() => window.__test.db.docs.get('roles/R03').end === '2027-03-01', null, { timeout: 1500 });
+  const msg = () => page.textContent('#panel-personnel tr[data-role-msg="R03"]');
+  assert.match(await msg(), /End date before start date/);
+  assert.match(await msg(), /hiring fee/i);
+  assert.equal(await page.$eval('#panel-personnel tr[data-role="R03"] [data-total="cost"]', (e) => e.textContent.trim()), '10,000');
+  await page.fill(pf('R05:start'), '');
+  await page.locator(pf('R05:start')).blur();
+  await page.waitForFunction(() => window.__test.db.docs.get('roles/R05').start === null, null, { timeout: 1500 });
+  assert.match(await page.textContent('#panel-personnel tr[data-role-msg="R05"]'), /No start date — not counted/);
+  assert.equal(await page.$eval('#panel-personnel tr[data-role="R05"] [data-total="cost"]', (e) => e.textContent.trim()), '0');
+  assert.deepEqual(page.errors, []);
+  await page.close();
+});
+
+test('personnel: numeric fields refuse ambiguous and negative entries (not saved), accept 0,5 and 16750', async () => {
+  const page = await openPersonnel();
+  await typeInto(page, pf('R10:quarterlyCostAt1Fte'), '16,750');
+  await page.locator(pf('R10:quarterlyCostAt1Fte')).blur();
+  const msg = () => page.textContent('#panel-personnel tr[data-role-msg="R10"]');
+  assert.match(await msg(), /Ambiguous: 16750 or 16\.75\?.*not saved/);
+  assert.equal(await pfValue(page, 'R10:quarterlyCostAt1Fte'), '16,750');
+  assert.match(await page.getAttribute(pf('R10:quarterlyCostAt1Fte'), 'class'), /is-error/);
+  await typeInto(page, pf('R10:fte'), '-1');
+  await page.locator(pf('R10:fte')).blur();
+  assert.match(await msg(), /below 0.*not saved/);
+  await page.waitForTimeout(300);
+  assert.equal((await roleWrites(page)).length, 0);
+  // fixing both writes them
+  await typeInto(page, pf('R10:quarterlyCostAt1Fte'), '18000');
+  await page.keyboard.press('Enter');
+  await typeInto(page, pf('R10:fte'), '0,5');
+  await page.keyboard.press('Enter');
+  await page.waitForFunction(() => { const d = window.__test.db.docs.get('roles/R10'); return d.fte === 0.5 && d.quarterlyCostAt1Fte === 18000; }, null, { timeout: 1500 });
+  assert.equal(await page.$eval('#panel-personnel tr[data-role-msg="R10"]', (e) => e.hidden), true);
+  assert.equal(await pfValue(page, 'R10:quarterlyCostAt1Fte'), '18,000');
+  // Escape drops a draft
+  await typeInto(page, pf('R10:oneOffHiringFee'), '123');
+  await page.keyboard.press('Escape');
+  assert.equal(await pfValue(page, 'R10:oneOffHiringFee'), '0');
+  assert.deepEqual(page.errors, []);
+  await page.close();
+});
+
+test('personnel: a remote save while typing keeps the focused text and updates the rest', async () => {
+  const page = await openPersonnel();
+  await typeInto(page, pf('R02:role'), 'Deputy COO');
+  await page.evaluate(() => {
+    const r = window.__test.db.docs.get('roles/R02');
+    return window.__test.db.remote('set', 'roles/R02', { ...r, role: 'Remote name', quarterlyCostAt1Fte: 60000 });
+  });
+  await page.waitForFunction((s) => document.querySelector(s).value === '60,000', pf('R02:quarterlyCostAt1Fte'));
+  assert.equal(await pfValue(page, 'R02:role'), 'Deputy COO');
+  await page.keyboard.press('Enter');
+  await page.waitForFunction(() => window.__test.db.docs.get('roles/R02').role === 'Deputy COO', null, { timeout: 1500 });
+  assert.equal(await page.evaluate(() => window.__test.db.docs.get('roles/R02').quarterlyCostAt1Fte), 60000);
+  await page.close();
+});
+
+test('personnel: viewer sees every control disabled and no add or delete buttons', async () => {
+  const page = await openPersonnel({ claude: { db: { docs: seededDocs() }, user: { can: false } }, editable: false });
+  await page.waitForFunction(() => window.__app.getState().source === 'db');
+  await page.waitForTimeout(100);
+  const st = await page.$$eval('#panel-personnel input, #panel-personnel select', (els) => ({ n: els.length, enabled: els.filter((e) => !e.disabled).length }));
+  assert.equal(st.n, 13 * 8);
+  assert.equal(st.enabled, 0);
+  assert.equal(await page.$$eval('#panel-personnel [data-delete]', (els) => els.filter((e) => e.offsetParent !== null).length), 0);
+  assert.equal(await page.getByRole('button', { name: 'Add role' }).isVisible(), false);
+  assert.deepEqual(page.errors, []);
+  await page.close();
+});
+
+test('personnel at 375 px, light and dark: no page-level horizontal scroll, the role table scrolls in its wrapper', async () => {
+  for (const colorScheme of ['light', 'dark']) {
+    const page = await openPersonnel({ colorScheme, viewport: { width: 375, height: 800 } });
+    const m = await page.evaluate(() => {
+      const wrap = document.querySelector('#panel-personnel .table-scroll');
+      return { sw: document.documentElement.scrollWidth, wrapScrolls: wrap.scrollWidth > wrap.clientWidth, overflow: getComputedStyle(wrap).overflowX };
+    });
+    assert.ok(m.sw <= 375, `scrollWidth ${m.sw}`);
+    assert.equal(m.overflow, 'auto');
+    assert.equal(m.wrapScrolls, true);
+    await page.close();
+  }
+});
+
+test('personnel: two quick edits of the same role both survive (the second write builds on the first)', async () => {
+  const page = await openPersonnel();
+  await page.evaluate(() => {
+    const edit = (key, value) => {
+      const el = document.querySelector(`#panel-personnel [data-key="${key}"]`);
+      el.focus(); el.value = value; el.dispatchEvent(new Event('input', { bubbles: true })); el.blur();
+    };
+    edit('R02:role', 'Deputy COO');
+    edit('R02:fte', '0,5');
+    const sel = document.querySelector('#panel-personnel [data-key="R02:department"]');
+    sel.value = 'Customer Service'; sel.dispatchEvent(new Event('change', { bubbles: true }));
+  });
+  await page.waitForFunction(() => window.__app.getState().status === 'saved', null, { timeout: 2000 });
+  const d = await page.evaluate(() => window.__test.db.docs.get('roles/R02'));
+  assert.equal(d.role, 'Deputy COO');
+  assert.equal(d.fte, 0.5);
+  assert.equal(d.department, 'Customer Service');
+  assert.equal(await pfValue(page, 'R02:role'), 'Deputy COO');
+  await page.close();
+});

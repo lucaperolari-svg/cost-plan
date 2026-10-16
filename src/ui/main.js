@@ -8,6 +8,7 @@ import { createStore } from '../store.js';
 import { calculate } from '../calc.js';
 import { renderSummary, destroySummary } from './summary.js';
 import { renderInputs, destroyInputs } from './inputs.js';
+import { renderPersonnel, destroyPersonnel } from './personnel.js';
 
 const TABS = ['summary', 'inputs', 'personnel', 'readme'];
 const TAB_KEY = 'ocp2027.tab';
@@ -170,6 +171,12 @@ mountTab('inputs', ({ el, getState, subscribe, actions }) => {
   render(getState());
   const unsubscribe = subscribe(render);
   return () => { unsubscribe(); destroyInputs(el); };
+});
+mountTab('personnel', ({ el, getState, subscribe, actions }) => {
+  const render = (state) => renderPersonnel(el, state, actions);
+  render(getState());
+  const unsubscribe = subscribe(render);
+  return () => { unsubscribe(); destroyPersonnel(el); };
 });
 const hash = location.hash.slice(1), saved = tabMemory.get();
 selectTab(TABS.includes(hash) ? hash : TABS.includes(saved) ? saved : 'summary', { remember: false });

@@ -366,3 +366,26 @@ test('missing expiresAt on a busy lease: fixed wait, not an instant retry loop',
   mock.timers.tick(1100); await settle();
   assert.equal(acquires, 2);
 });
+
+test('role edits show at once (overlay until written), so a second edit builds on the first; a failed one reverts', async (t) => {
+  t.after(() => mock.timers.reset());
+  const { db, store } = await seeded();
+  const r02 = () => store.getState().roles.find((r) => r.id === 'R02');
+  store.upsertRole({ ...r02(), role: 'Deputy COO' });
+  assert.equal(r02().role, 'Deputy COO'); // before any db round trip
+  store.upsertRole({ ...r02(), fte: 0.5 });
+  store.upsertRole({ id: 'R14', role: 'New', department: 'Customer Service', start: '2027-07-01', end: null, fte: 1, quarterlyCostAt1Fte: 9000, oneOffHiringFee: 0 });
+  assert.ok(store.getState().roles.some((r) => r.id === 'R14'));
+  store.deleteRole('R03');
+  assert.ok(!store.getState().roles.some((r) => r.id === 'R03'));
+  await drain(3);
+  assert.equal(db.docs.get('roles/R02').role, 'Deputy COO');
+  assert.equal(db.docs.get('roles/R02').fte, 0.5);
+  assert.equal(r02().fte, 0.5);
+  assert.ok(db.docs.has('roles/R14') && !db.docs.has('roles/R03'));
+  db.failNext('resource_exhausted');
+  store.upsertRole({ ...r02(), fte: 2 });
+  assert.equal(r02().fte, 2);
+  await drain(3);
+  assert.equal(r02().fte, 0.5);
+});

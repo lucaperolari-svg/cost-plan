@@ -15,6 +15,7 @@ export function createStore({ db, user, seed, debounceMs = 600, retryMs = () => 
   const fresh = () => ({ scalars: {}, monthly: {} });
   let pending = fresh(); // edits not yet queued
   const layers = []; // one overlay per queued or in-flight batch, removed by its own job
+  const roleLayers = []; // one apply fn per queued or in-flight role edit, removed when its write settles
   let planWaiters = [];
   let state;
 
@@ -29,7 +30,7 @@ export function createStore({ db, user, seed, debounceMs = 600, retryMs = () => 
   const recompute = () => {
     state = {
       inputs: inputsFrom(...layers, pending),
-      roles: dbInputs && dbRoles ? dbRoles : localRoles,
+      roles: roleLayers.reduce((l, apply) => apply(l), dbInputs && dbRoles ? dbRoles : localRoles),
       departments: dbMeta?.departments || seed.departments,
       readOnly, source: dbInputs ? 'db' : 'seed', status,
       ...(error ? { error } : {}),
@@ -53,7 +54,7 @@ export function createStore({ db, user, seed, debounceMs = 600, retryMs = () => 
       return fn();
     }
   }
-  function enqueue(job, batch) {
+  function enqueue(job, batch, done) {
     if (readOnly || disposed) return;
     if (batch) layers.push(batch);
     busy++; status = 'saving'; error = undefined; recompute();
@@ -62,6 +63,7 @@ export function createStore({ db, user, seed, debounceMs = 600, retryMs = () => 
       if (e?.code === 'invalid_argument' || e?.code === 'revoked') { readOnly = true; clearTimeout(timer); timer = null; pending = fresh(); }
     }).then(() => {
       if (batch) layers.splice(layers.indexOf(batch), 1); // drop only this batch's overlay
+      done?.();
       busy--;
       if (!busy && !timer && status === 'saving') status = 'saved';
       recompute();
@@ -127,10 +129,16 @@ export function createStore({ db, user, seed, debounceMs = 600, retryMs = () => 
     arr[index] = value;
     queueEdit(() => { pending.monthly[name] = arr; });
   }
+  // The edit shows at once (local roles before the plan exists, else an overlay on the db roles until its
+  // write settles), so a second edit of the same role, made before the snapshot returns, builds on the first.
   function roleEdit(apply, write) {
     if (readOnly || disposed) return;
-    if (!dbInputs && !seeded) { localRoles = apply(localRoles); recompute(); }
-    enqueue(async () => { if ((await seedIfNeeded()) !== 'seeded') await write(); });
+    let layer = null;
+    if (!dbInputs && !seeded) localRoles = apply(localRoles);
+    else roleLayers.push((layer = apply));
+    recompute();
+    enqueue(async () => { if ((await seedIfNeeded()) !== 'seeded') await write(); }, null,
+      () => { if (layer) roleLayers.splice(roleLayers.indexOf(layer), 1); });
   }
   function upsertRole(role) {
     const r = clone(role);

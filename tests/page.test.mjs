@@ -852,6 +852,80 @@ test('snapshots slower than the connect cap: View only until they arrive, then e
   await page.close();
 });
 
+test('an Inputs edit and a Personnel edit in flight together both land', async () => {
+  const page = await openInputs({ claude: { db: { docs: seededDocs(), writeDelay: 500 }, user: { can: true, id: 'u1' } } });
+  await page.fill(field('aiCallShare'), '50');
+  await page.locator(field('aiCallShare')).blur();
+  await page.getByRole('tab', { name: 'Personnel' }).click();
+  await typeInto(page, pf('R02:fte'), '0,5');
+  await page.keyboard.press('Enter');
+  // the inputs batch is debounced and written (500 ms), the role write queues behind it
+  await page.waitForFunction(() => window.__test.db.writes.some((w) => w.path === 'plan/inputs'), null, { timeout: 2000 });
+  assert.equal(await page.evaluate(() => window.__app.getState().status), 'saving');
+  assert.equal(await page.evaluate(() => window.__app.getState().roles.find((r) => r.id === 'R02').fte), 0.5);
+  await page.waitForFunction(() => window.__app.getState().status === 'saved', null, { timeout: 4000 });
+  const db = await page.evaluate(() => ({ s: window.__test.db.docs.get('plan/inputs').scalars.aiCallShare, fte: window.__test.db.docs.get('roles/R02').fte }));
+  assert.deepEqual(db, { s: 0.5, fte: 0.5 });
+  assert.equal(await page.evaluate(() => window.__app.getState().roles.find((r) => r.id === 'R02').fte), 0.5);
+  assert.deepEqual(page.errors, []);
+  await page.close();
+});
+
+test('a remote role save while a field of that role is focused and its earlier write is unsettled', async () => {
+  const page = await openPersonnel({ claude: { db: { docs: seededDocs(), writeDelay: 2000 }, user: { can: true, id: 'u1' } } });
+  await typeInto(page, pf('R02:fte'), '0,5');
+  await page.keyboard.press('Enter'); // write in flight for 2 s
+  await typeInto(page, pf('R02:role'), 'Deputy COO'); // focused, not committed
+  await page.evaluate(() => {
+    const r = window.__test.db.docs.get('roles/R02');
+    return window.__test.db.remote('set', 'roles/R02', { ...r, quarterlyCostAt1Fte: 60000 });
+  });
+  // the colleague's field updates at once, while the fte write is still unsettled
+  await page.waitForFunction((s) => document.querySelector(s).value === '60,000', pf('R02:quarterlyCostAt1Fte'), { timeout: 1000 });
+  assert.equal(await page.evaluate(() => window.__app.getState().status), 'saving');
+  assert.equal(await pfValue(page, 'R02:role'), 'Deputy COO');
+  assert.equal(await page.evaluate((s) => document.activeElement === document.querySelector(s), pf('R02:role')), true);
+  assert.equal(await pfValue(page, 'R02:fte'), '0.5');
+  await page.keyboard.press('Enter'); // commit the name while the fte write is still in flight
+  await page.waitForFunction(() => window.__app.getState().status === 'saved', null, { timeout: 6000 });
+  const d = await page.evaluate(() => window.__test.db.docs.get('roles/R02'));
+  assert.equal(d.role, 'Deputy COO');
+  assert.equal(d.fte, 0.5);
+  assert.equal(d.quarterlyCostAt1Fte, 60000);
+  assert.equal(await pfValue(page, 'R02:quarterlyCostAt1Fte'), '60,000');
+  assert.deepEqual(page.errors, []);
+  await page.close();
+});
+
+test('first edit on an empty db seeds the plan: 13 roles, plan/meta and plan/inputs with the edit', async () => {
+  const page = await openPage({ claude: { db: true, user: { can: true, id: 'u1' } } });
+  await page.getByRole('tab', { name: 'Inputs' }).click();
+  await page.waitForFunction(() => window.__app.getState().readOnly === false);
+  assert.equal(await page.evaluate(() => window.__app.getState().source), 'seed');
+  await page.fill(field('aiCallShare'), '50');
+  await page.locator(field('aiCallShare')).blur();
+  await page.waitForFunction(() => window.__app.getState().source === 'db' && window.__app.getState().status === 'saved', null, { timeout: 3000 });
+  const db = await page.evaluate(() => {
+    const d = window.__test.db.docs;
+    return {
+      roles: [...d.keys()].filter((p) => p.startsWith('roles/')).sort(),
+      meta: d.get('plan/meta'), inputs: d.get('plan/inputs'),
+      ops: window.__test.db.writes.map((w) => `${w.op} ${w.path}`),
+    };
+  });
+  assert.deepEqual(db.roles, personnelSeed.roles.map((r) => `roles/${r.id}`).sort());
+  assert.deepEqual(db.meta.departments, personnelSeed.departments);
+  assert.equal(db.inputs.scalars.aiCallShare, 0.5);
+  assert.equal(Object.keys(db.inputs.scalars).length, inputsSeed.scalars.length);
+  assert.deepEqual(db.inputs.monthly, inputsSeed.monthly);
+  assert.equal(db.inputs.updatedBy, 'u1');
+  assert.equal(db.ops.filter((o) => o === 'set plan/inputs').length, 1);
+  assert.equal(db.ops.at(-1), 'set plan/inputs'); // the plan doc last, once the roles and meta are in
+  assert.equal(await fieldValue(page, 'aiCallShare'), '50%');
+  assert.deepEqual(page.errors, []);
+  await page.close();
+});
+
 // --- Task 9: Read Me and Download Excel
 const XLSX_STUB = `window.XLSX = (() => {
   const log = (window.__xl = { sheets: {}, order: [] });

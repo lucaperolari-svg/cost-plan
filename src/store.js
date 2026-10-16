@@ -153,11 +153,23 @@ export function createStore({ db, user, seed, debounceMs = 600, retryMs = () => 
     enqueue(async () => { if ((await seedIfNeeded()) !== 'seeded') await write(); }, null,
       () => { if (layer) roleLayers.splice(roleLayers.indexOf(layer), 1); });
   }
+  // Only the fields that differ from the role as shown are the edit (the overlay and the write carry just those),
+  // so another editor's change to a different field of the same role still shows, and the write, made when its
+  // turn comes, sets that field over the latest db version of the role instead of the copy the edit started from.
+  const same = (a, b) => JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
   function upsertRole(role) {
+    if (isReadOnly()) return;
     const r = clone(role);
+    const cur = state.roles.find((x) => x.id === r.id);
+    const patch = cur ? Object.fromEntries(Object.entries(r).filter(([k, v]) => !same(cur[k], v))) : r;
+    if (!Object.keys(patch).length) return; // nothing changed: no write
     roleEdit(
-      (l) => (l.some((x) => x.id === r.id) ? l.map((x) => (x.id === r.id ? r : x)) : [...l, r]),
-      async () => { const st = await stamp(); await send(() => db.doc(`roles/${r.id}`).set({ ...r, ...st })); });
+      (l) => (l.some((x) => x.id === r.id) ? l.map((x) => (x.id === r.id ? { ...x, ...patch } : x)) : [...l, { ...r }]),
+      async () => {
+        const base = (dbRoles || []).find((x) => x.id === r.id) ?? r;
+        const st = await stamp();
+        await send(() => db.doc(`roles/${r.id}`).set({ ...base, ...patch, id: r.id, ...st }));
+      });
   }
   function deleteRole(id) {
     roleEdit((l) => l.filter((x) => x.id !== id), () => send(() => db.doc(`roles/${id}`).delete()));

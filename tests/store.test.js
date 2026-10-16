@@ -540,3 +540,25 @@ test('repeated dead listeners back off, and dispose stops resubscribing', async 
   await drain(40, 500);
   assert.equal(subscribes, 3);
 });
+
+test('a role edit overlays only its fields: a remote change to another field shows and survives the write', async (t) => {
+  t.after(() => mock.timers.reset());
+  const { db, store } = await seeded();
+  db.setWriteDelay(300);
+  const r02 = () => store.getState().roles.find((r) => r.id === 'R02');
+  store.upsertRole({ ...r02(), fte: 0.5 }); // in flight
+  store.upsertRole({ ...r02(), role: 'Deputy COO' }); // queued behind it
+  await settle();
+  await db.remote('set', 'roles/R02', { ...db.docs.get('roles/R02'), quarterlyCostAt1Fte: 60000 });
+  await settle();
+  assert.equal(r02().quarterlyCostAt1Fte, 60000);
+  assert.equal(r02().fte, 0.5);
+  assert.equal(r02().role, 'Deputy COO');
+  await drain(4);
+  const d = db.docs.get('roles/R02');
+  assert.deepEqual([d.fte, d.role, d.quarterlyCostAt1Fte], [0.5, 'Deputy COO', 60000]);
+  const n = db.writes.length;
+  store.upsertRole({ ...r02() }); // unchanged: no write
+  await drain(2);
+  assert.equal(db.writes.length, n);
+});

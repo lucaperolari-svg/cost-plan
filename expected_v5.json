@@ -1,0 +1,154 @@
+{
+  "departments": [
+    "Billing & Invoicing",
+    "Customer Service",
+    "Operations & Service",
+    "Pricing & Risk Management",
+    "Switching & Metering"
+  ],
+  "roles": [
+    {
+      "id": "R01",
+      "role": "Chief Operating Officer",
+      "department": "Operations & Service",
+      "description": "Switzerland \u00b7 cross-country \u00b7 Product Manager & Excellence Lead. Covering Credit risk Management",
+      "start": "2026-10-01",
+      "end": null,
+      "fte": 1,
+      "quarterlyCostAt1Fte": 58500,
+      "oneOffHiringFee": 0
+    },
+    {
+      "id": "R02",
+      "role": "Deputy COO & Innovation Lead",
+      "department": "Operations & Service",
+      "description": "Spain \u00b7 cross-country \u00b7 Co Product Manager covering AI innovation",
+      "start": "2027-01-01",
+      "end": null,
+      "fte": 1,
+      "quarterlyCostAt1Fte": 50250,
+      "oneOffHiringFee": 0
+    },
+    {
+      "id": "R03",
+      "role": "Customer Excellence Manager",
+      "department": "Customer Service",
+      "description": "Spain \u00b7 cross-country \u00b7 Optimization Team / Direct Report to COO \u00b7 hired via agency (20% of salary)",
+      "start": "2027-04-01",
+      "end": null,
+      "fte": 1,
+      "quarterlyCostAt1Fte": 16750,
+      "oneOffHiringFee": 10000
+    },
+    {
+      "id": "R04",
+      "role": "Customer Service Manager",
+      "department": "Customer Service",
+      "description": "Spain \u00b7 cross-country \u00b7 Core Team & Team Lead / Direct Report to COO",
+      "start": "2026-10-01",
+      "end": null,
+      "fte": 1,
+      "quarterlyCostAt1Fte": 12730,
+      "oneOffHiringFee": 0
+    },
+    {
+      "id": "R05",
+      "role": "Customer Service Expert",
+      "department": "Customer Service",
+      "description": "Spain \u00b7 country-specific \u00b7 Core team",
+      "start": "2027-04-01",
+      "end": null,
+      "fte": 1,
+      "quarterlyCostAt1Fte": 8375,
+      "oneOffHiringFee": 0
+    },
+    {
+      "id": "R06",
+      "role": "Cash Management Expert",
+      "department": "Billing & Invoicing",
+      "description": "Spain \u00b7 cross-country \u00b7 Core team / (potential little buffer)",
+      "start": "2027-04-01",
+      "end": null,
+      "fte": 1,
+      "quarterlyCostAt1Fte": 11725,
+      "oneOffHiringFee": 0
+    },
+    {
+      "id": "R07",
+      "role": "Switching & Metering Manager",
+      "department": "Switching & Metering",
+      "description": "Spain \u00b7 cross-country \u00b7 Core Team & Team Lead / Direct Report to COO \u00b7 hired via agency (20% of salary)",
+      "start": "2026-10-01",
+      "end": null,
+      "fte": 1,
+      "quarterlyCostAt1Fte": 16750,
+      "oneOffHiringFee": 10000
+    },
+    {
+      "id": "R08",
+      "role": "Switching & Metering Expert",
+      "department": "Switching & Metering",
+      "description": "Spain \u00b7 country-specific \u00b7 Core Team",
+      "start": "2027-01-01",
+      "end": null,
+      "fte": 1,
+      "quarterlyCostAt1Fte": 12060,
+      "oneOffHiringFee": 0
+    },
+    {
+      "id": "R09",
+      "role": "Pricing & Forecasting Expert",
+      "department": "Pricing & Risk Management",
+      "description": "Spain \u00b7 country-specific \u00b7 Core Team & Team Lead / Direct Report to COO",
+      "start": "2026-10-01",
+      "end": null,
+      "fte": 1,
+      "quarterlyCostAt1Fte": 19430,
+      "oneOffHiringFee": 0
+    },
+    {
+      "id": "R10",
+      "role": "Quant Analyst & Market Risk",
+      "department": "Pricing & Risk Management",
+      "description": "Spain \u00b7 cross-country \u00b7 Optimization Team",
+      "start": "2027-04-01",
+      "end": null,
+      "fte": 1,
+      "quarterlyCostAt1Fte": 16750,
+      "oneOffHiringFee": 0
+    },
+    {
+      "id": "R11",
+      "role": "Billing & invoicing Manager",
+      "department": "Billing & Invoicing",
+      "description": "Spain \u00b7 cross-country \u00b7 Core Team & Team lead / Direct Report to COO \u00b7 hired via agency (20% of salary)",
+      "start": "2026-10-01",
+      "end": null,
+      "fte": 1,
+      "quarterlyCostAt1Fte": 16750,
+      "oneOffHiringFee": 10000
+    },
+    {
+      "id": "R12",
+      "role": "Billing & Invoicing Expert",
+      "department": "Billing & Invoicing",
+      "description": "Spain \u00b7 cross-country \u00b7 Core team",
+      "start": "2027-04-01",
+      "end": null,
+      "fte": 1,
+      "quarterlyCostAt1Fte": 10385,
+      "oneOffHiringFee": 0
+    },
+    {
+      "id": "R13",
+      "role": "Operation Excellence Manager",
+      "department": "Operations & Service",
+      "description": "Spain \u00b7 cross-country \u00b7 Optimization Team / Direct Report to COO \u00b7 hired via agency (20% of salary)",
+      "start": "2027-01-01",
+      "end": null,
+      "fte": 1,
+      "quarterlyCostAt1Fte": 18425,
+      "oneOffHiringFee": 11000
+    }
+  ]
+}

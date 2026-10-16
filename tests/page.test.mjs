@@ -798,3 +798,102 @@ test('personnel: two quick edits of the same role both survive (the second write
   assert.equal(await pfValue(page, 'R02:role'), 'Deputy COO');
   await page.close();
 });
+
+// --- Task 9: Read Me and Download Excel
+const XLSX_STUB = `window.XLSX = (() => {
+  const log = (window.__xl = { sheets: {}, order: [] });
+  return {
+    utils: {
+      book_new: () => ({ names: [] }),
+      aoa_to_sheet: (rows) => ({ rows }),
+      book_append_sheet: (wb, ws, name) => { wb.names.push(name); log.sheets[name] = ws.rows; log.order.push(name); },
+    },
+    write: () => new Uint8Array([80, 75, 3, 4]),
+  };
+})();`;
+const withXlsx = { [XLSX]: XLSX_STUB };
+const DL_EDITOR = { db: true, user: { can: true, id: 'u1' }, downloads: true };
+const status = (page) => page.$eval('#save-status', (e) => e.textContent);
+const waitStatus = (page, text) => page.waitForFunction((t) => document.getElementById('save-status').textContent.includes(t), text, { timeout: 2000 });
+
+test('Read Me: headings and definitions', async () => {
+  const page = await openPage();
+  await page.click('#tab-readme');
+  const text = await page.$eval('#panel-readme', (e) => e.textContent);
+  const heads = await page.$$eval('#panel-readme h2', (els) => els.map((e) => e.textContent.trim()));
+  for (const h2 of ['How to use', 'Definitions', 'Calculation logic']) assert.ok(heads.includes(h2), `heading ${h2}`);
+  for (const term of ['CTS average', 'CTS marginal', 'Fixed/Variable', 'Buckets', 'Outside CTS', 'PODs', 'FTE']) assert.ok(text.includes(term), `term ${term}`);
+  assert.ok(text.includes('End date before start date') || /end date is before the start date/i.test(text), 'Decision 1 is explained');
+  assert.ok(/December/.test(text));
+  assert.equal(await page.$('#panel-readme .placeholder'), null);
+  assert.deepEqual(page.errors, []);
+  await page.close();
+});
+
+test('Download Excel: builds the sheets from the current state and saves through downloads', async () => {
+  const page = await openPage({ claude: DL_EDITOR, cdn: withXlsx });
+  await page.waitForSelector('#download-excel', { state: 'visible' });
+  await page.waitForFunction(() => document.getElementById('badge-view-only')?.hidden === true);
+  // an edit is part of the export
+  await page.evaluate(() => window.__app.actions.setScalar('yearEndCustomerTarget', 2500));
+  await page.click('#download-excel');
+  await waitStatus(page, 'Excel downloaded');
+  const r = await page.evaluate(() => ({ saves: window.__test.saves.map((s) => ({ filename: s.filename, n: s.data.length })), order: window.__xl.order, inputs: window.__xl.sheets.Inputs, summary: window.__xl.sheets.Summary, personnel: window.__xl.sheets.Personnel.length }));
+  assert.equal(r.saves.length, 1);
+  assert.equal(r.saves[0].filename, 'Operations_Cost_Plan_2027.xlsx');
+  assert.ok(r.saves[0].n > 0);
+  assert.deepEqual(r.order, ['Summary', 'Inputs', 'Personnel']);
+  assert.ok(r.inputs.some((row) => row[1] && /target/i.test(row[1]) && row[2] === 2500), 'edited scalar exported');
+  const total = r.summary.find((row) => /^TOTAL/i.test(String(row[0])));
+  assert.ok(Math.abs(total[total.length - 1] - 1216931.37) < 0.01);
+  assert.ok(r.personnel > 1);
+  assert.equal(await page.isEnabled('#download-excel'), true);
+  assert.deepEqual(page.errors, []);
+  await page.close();
+});
+
+test('Download Excel: viewers can download too', async () => {
+  const page = await openPage({ claude: { db: true, user: { can: false }, downloads: true }, cdn: withXlsx });
+  await page.waitForSelector('#download-excel', { state: 'visible' });
+  await page.click('#download-excel');
+  await page.waitForFunction(() => window.__test.saves.length === 1);
+  assert.equal(await page.isVisible('#badge-view-only'), true);
+  await page.close();
+});
+
+test('Download Excel: button is disabled while saving and restored afterwards', async () => {
+  const slow = 'T.downloads = Object.freeze({ save: (req) => new Promise((r) => setTimeout(() => { T.saves.push(req); r({ status: "delivered" }); }, 300)) });';
+  const page = await openPage({ claude: { ...DL_EDITOR, script: slow }, cdn: withXlsx });
+  await page.waitForSelector('#download-excel', { state: 'visible' });
+  await page.click('#download-excel');
+  assert.equal(await page.isDisabled('#download-excel'), true);
+  await waitStatus(page, 'Excel downloaded');
+  assert.equal(await page.isEnabled('#download-excel'), true);
+  await page.close();
+});
+
+test('Download Excel: declined is quiet; unavailable, errors and a missing library are reported', async () => {
+  const cases = [
+    ['declined', 'T.downloads = Object.freeze({ save: async () => { throw Object.assign(new Error("no"), { code: "declined" }); } });', withXlsx, ''],
+    ['unavailable', 'T.downloads = Object.freeze({ save: async () => { throw Object.assign(new Error("no"), { code: "not_granted" }); } });', withXlsx, 'Download not available'],
+    ['failed', 'T.downloads = Object.freeze({ save: async () => { throw new Error("boom"); } });', withXlsx, 'Download failed'],
+    ['no library', '', 'fail', "Excel library didn't load"],
+  ];
+  for (const [name, script, cdn, expected] of cases) {
+    const page = await openPage({ claude: { ...DL_EDITOR, script }, cdn });
+    await page.waitForSelector('#download-excel', { state: 'visible' });
+    await page.click('#download-excel');
+    if (expected) await waitStatus(page, expected);
+    else { await page.waitForTimeout(150); assert.ok(!/downloaded|failed|not available/i.test(await status(page)), name); }
+    assert.equal(await page.isEnabled('#download-excel'), true, name);
+    if (name === 'no library') assert.equal(await page.evaluate(() => window.__test.saves.length), 0);
+    await page.close();
+  }
+});
+
+test('Download Excel: the button stays hidden when downloads is null', async () => {
+  const page = await openPage({ claude: { db: true, user: { can: true, id: 'u1' }, downloads: null }, cdn: withXlsx });
+  await page.waitForTimeout(150);
+  assert.equal(await page.isHidden('#download-excel'), true);
+  await page.close();
+});

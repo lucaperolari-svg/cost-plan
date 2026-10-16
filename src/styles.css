@@ -273,3 +273,14 @@ h1 { margin: 0; font-size: var(--fs-lg); font-weight: 700; line-height: 1.2; col
 @media (prefers-reduced-motion: reduce) {
   * { transition: none !important; animation: none !important; }
 }
+
+/* read me tab */
+.readme { display: grid; gap: 20px; min-width: 0; max-width: 80ch; }
+.rm-section .card-note { margin-bottom: 4px; }
+.rm-sub { margin: 16px 0 4px; font-size: var(--fs-xs); font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: var(--petrol-ink); }
+.rm-p { margin: 0 0 8px; max-width: 75ch; font-size: var(--fs-md); }
+.rm-list { margin: 0; padding-left: 1.25rem; display: grid; gap: 6px; max-width: 75ch; }
+.rm-defs { margin: 0; display: grid; gap: 4px 0; }
+.rm-defs dt { margin-top: 10px; font-weight: 700; color: var(--ink); }
+.rm-defs dd { margin: 0; max-width: 75ch; }
+.rm-list .tag { vertical-align: 1px; }

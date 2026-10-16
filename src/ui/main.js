@@ -6,9 +6,11 @@ import inputsSeed from '../../data/inputs.json';
 import personnelSeed from '../../data/personnel.json';
 import { createStore } from '../store.js';
 import { calculate } from '../calc.js';
+import { buildSheets, exportXlsx } from '../export.js';
 import { renderSummary, destroySummary } from './summary.js';
 import { renderInputs, destroyInputs } from './inputs.js';
 import { renderPersonnel, destroyPersonnel } from './personnel.js';
+import { renderReadme } from './readme.js';
 
 const TABS = ['summary', 'inputs', 'personnel', 'readme'];
 const TAB_KEY = 'ocp2027.tab';
@@ -23,7 +25,10 @@ const subs = new Set();
 let store = null, unsubStore = null;
 let connecting = !!window.claude; // until db/user resolve and the store knows the write permission
 const caps = { db: null, user: null, downloads: null };
-let downloadHandler = null;
+let downloading = false;
+let notice = null, noticeTimer = null; // brief download feedback in the status area: {text, state}
+const NOTICE_MS = 4000;
+const XLSX_FILENAME = 'Operations_Cost_Plan_2027.xlsx';
 
 function emit(state) {
   renderStatus(state);
@@ -49,7 +54,6 @@ export const app = {
     deleteRole: (...a) => store.deleteRole(...a),
   },
   capabilities: () => ({ ...caps }),
-  onDownload(fn) { downloadHandler = fn; renderDownload(); },
   mountTab,
 };
 
@@ -90,8 +94,9 @@ function renderStatus(state) {
   let text = '', st = state.status;
   if (connecting) { text = 'Connecting…'; st = 'connecting'; }
   else if (st === 'saving') text = 'Saving…';
-  else if (st === 'saved') text = 'Saved';
   else if (st === 'error') text = `Not saved: ${state.error || 'database error'}`;
+  else if (notice) { text = notice.text; st = notice.state; } // download feedback outranks "Saved", never a save error
+  else if (st === 'saved') text = 'Saved';
   save.textContent = text;
   save.dataset.state = st;
   save.hidden = !text;
@@ -99,14 +104,36 @@ function renderStatus(state) {
 function renderDownload() {
   const btn = $('download-excel');
   btn.hidden = !caps.downloads;
-  btn.disabled = !downloadHandler;
+  btn.disabled = downloading;
 }
-$('download-excel').addEventListener('click', async () => {
-  if (!downloadHandler || !caps.downloads) return;
-  const btn = $('download-excel');
-  btn.disabled = true;
-  try { await downloadHandler({ getState: app.getState, downloads: caps.downloads }); } catch (e) { console.error(e); } finally { btn.disabled = false; }
-});
+function showNotice(text, state) {
+  clearTimeout(noticeTimer);
+  notice = text ? { text, state } : null;
+  if (notice) noticeTimer = setTimeout(() => { notice = null; emit(store.getState()); }, NOTICE_MS);
+  emit(store.getState());
+}
+// Excel export of the current state (including edits the store holds but has not finished saving).
+async function downloadExcel() {
+  if (downloading || !caps.downloads) return;
+  downloading = true;
+  renderDownload();
+  try {
+    const XLSX = window.XLSX;
+    if (!XLSX) { showNotice("Excel library didn't load — reload the page", 'error'); return; }
+    const { inputs, roles, departments } = app.getState();
+    const outcome = await exportXlsx({ XLSX, downloads: caps.downloads, sheets: buildSheets(inputs, roles, departments), filename: XLSX_FILENAME });
+    if (outcome === 'saved' || outcome === 'delivered') showNotice('Excel downloaded', 'saved');
+    else if (outcome === 'unavailable') showNotice('Download not available', 'error');
+    else showNotice('', null); // declined: the person chose not to save
+  } catch (e) {
+    console.error(e);
+    showNotice('Download failed', 'error');
+  } finally {
+    downloading = false;
+    renderDownload();
+  }
+}
+$('download-excel').addEventListener('click', downloadExcel);
 
 // --- tabs
 const tabEl = (name) => $(`tab-${name}`);
@@ -178,6 +205,7 @@ mountTab('personnel', ({ el, getState, subscribe, actions }) => {
   const unsubscribe = subscribe(render);
   return () => { unsubscribe(); destroyPersonnel(el); };
 });
+mountTab('readme', ({ el }) => renderReadme(el));
 const hash = location.hash.slice(1), saved = tabMemory.get();
 selectTab(TABS.includes(hash) ? hash : TABS.includes(saved) ? saved : 'summary', { remember: false });
 window.__app = app;

@@ -72,3 +72,52 @@ test('exportXlsx maps rejections', async () => {
   for (const c of ['not_granted', 'capability_disabled', 'capability_removed', 'unavailable']) assert.equal(await run(rej(c)), 'unavailable');
   await assert.rejects(run(rej('boom')), { code: 'boom' });
 });
+
+// a SheetJS-like aoa_to_sheet: one cell object per non-empty value, keyed by A1 address
+const col = (c) => { let s = ''; for (c++; c; c = Math.floor((c - 1) / 26)) s = String.fromCharCode(65 + ((c - 1) % 26)) + s; return s; };
+const cellXlsx = () => {
+  const books = {};
+  return {
+    books,
+    utils: {
+      aoa_to_sheet: (rows) => {
+        const ws = {};
+        rows.forEach((row, r) => row.forEach((v, c) => { if (v !== undefined && v !== null) ws[`${col(c)}${r + 1}`] = { v, t: typeof v === 'number' ? 'n' : 's' }; }));
+        return ws;
+      },
+      book_new: () => ({}),
+      book_append_sheet: (wb, ws, name) => { books[name] = ws; },
+    },
+    write: () => new Uint8Array([1]),
+  };
+};
+
+test('exportXlsx: number formats — shares as %, money 2 dp with thousands, per-POD 2 dp, counts 0 dp; values stay numbers', async () => {
+  const XLSX = cellXlsx();
+  const s = sheets();
+  await exportXlsx({ XLSX, downloads: { save: async () => ({ status: 'saved' }) }, sheets: s });
+  const { Summary, Inputs, Personnel } = XLSX.books;
+  const rowOf = (rows, pred) => rows.findIndex(pred) + 1;
+  // Inputs: a share keeps its fraction and gets a percent format; a money scalar is left as typed
+  const sepa = inputs.scalars.find((x) => x.key === 'paymentMixSepa');
+  const r = rowOf(s.Inputs, (row) => row[1] === sepa.label);
+  assert.deepEqual([Inputs[`C${r}`].v, Inputs[`C${r}`].t, Inputs[`C${r}`].z], [0.77, 'n', '0.0%']);
+  const fee = rowOf(s.Inputs, (row) => row[1] === inputs.scalars.find((x) => x.key === 'recordingsPricePerMinute').label);
+  assert.equal(Inputs[`C${fee}`].z, undefined);
+  const nc = rowOf(s.Inputs, (row) => row[0] === 'New customers');
+  assert.equal(Inputs[`B${nc}`].z, '#,##0');
+  // Summary: € rows 2 dp with thousands (months and total), per-POD 2 dp, counts 0 dp, FTE 2 dp; text cells untouched
+  const tot = rowOf(s.Summary, (row) => row[0] === 'TOTAL OPERATIONS COST');
+  assert.equal(Summary[`D${tot}`].z, '#,##0.00');
+  assert.equal(Summary[`P${tot}`].z, '#,##0.00');
+  assert.equal(typeof Summary[`P${tot}`].v, 'number');
+  assert.equal(Summary[`A${tot}`].z, undefined);
+  assert.equal(Summary[`D${rowOf(s.Summary, (row) => /^CTS per POD per year - average/.test(row[0]))}`].z, '#,##0.00');
+  assert.equal(Summary[`P${rowOf(s.Summary, (row) => row[0] === 'New customers')}`].z, '#,##0');
+  assert.equal(Summary[`D${rowOf(s.Summary, (row) => /^Personnel FTE/.test(row[0]))}`].z, '0.00');
+  assert.equal(Summary.D1.z, undefined); // header
+  // Personnel: costs 2 dp with thousands, FTE 2 dp
+  assert.equal(Personnel.G2.z, '0.00');
+  for (const c of ['H', 'I', 'J', 'U', 'V']) assert.equal(Personnel[`${c}2`].z, '#,##0.00', c);
+  assert.equal(Personnel.A2.z, undefined);
+});

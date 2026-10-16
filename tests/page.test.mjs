@@ -707,6 +707,27 @@ test('personnel: end date before start date warns (fee still booked, decision 1)
   await page.close();
 });
 
+test('personnel: clearing only part of a date is blocked (Incomplete date — not saved); emptying it writes null', async () => {
+  const page = await openPersonnel();
+  await page.click(pf('R03:start'));
+  await page.keyboard.press('Backspace'); // clears one segment: the value becomes '' with badInput
+  assert.deepEqual(await page.$eval(pf('R03:start'), (e) => [e.value, e.validity.badInput]), ['', true]);
+  await page.locator(pf('R03:start')).blur();
+  const msg = () => page.textContent('#panel-personnel tr[data-role-msg="R03"]');
+  assert.match(await msg(), /Start: Incomplete date — not saved/);
+  assert.match(await page.getAttribute(pf('R03:start'), 'class'), /is-error/);
+  await page.waitForTimeout(300);
+  assert.equal((await roleWrites(page)).length, 0);
+  assert.equal(await page.evaluate(() => window.__app.getState().roles.find((r) => r.id === 'R03').start), '2027-04-01');
+  // emptying the field on purpose writes null
+  await page.fill(pf('R03:start'), '');
+  await page.locator(pf('R03:start')).blur();
+  await page.waitForFunction(() => window.__test.db.docs.get('roles/R03').start === null, null, { timeout: 1500 });
+  assert.doesNotMatch(await msg(), /Incomplete date/);
+  assert.deepEqual(page.errors, []);
+  await page.close();
+});
+
 test('personnel: numeric fields refuse ambiguous and negative entries (not saved), accept 0,5 and 16750', async () => {
   const page = await openPersonnel();
   await typeInto(page, pf('R10:quarterlyCostAt1Fte'), '16,750');

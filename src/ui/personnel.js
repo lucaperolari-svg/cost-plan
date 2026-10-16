@@ -22,6 +22,8 @@ const SPECS = {
 const CONFIRM_MS = 4000;
 const END_BEFORE_START = 'End date before start date: no salary is counted, but the one-off hiring fee is still booked in the start month (as in the Excel model).';
 const NO_START = 'No start date — not counted';
+const DATES = [{ field: 'start', label: 'Start' }, { field: 'end', label: 'End' }];
+const INCOMPLETE = 'Incomplete date';
 
 const fieldKey = (id, field) => `${id}:${field}`;
 const splitKey = (key) => { const i = key.lastIndexOf(':'); return { id: key.slice(0, i), field: key.slice(i + 1) }; };
@@ -198,6 +200,7 @@ function rowMessages(v, role) {
     else if (Number.isNaN(val)) out.push({ level: 'error', text: `${n.label}: Not a number${notSaved}` });
     else if (typeof val === 'number' && val < 0) out.push({ level: 'error', text: `${n.label}: Value is below 0${notSaved}` });
   }
+  for (const d of DATES) if (v.f.rejected.has(fieldKey(role.id, d.field))) out.push({ level: 'error', text: `${d.label}: ${INCOMPLETE}${NOT_SAVED}` });
   if (!role.start) out.push({ level: 'warning', text: NO_START });
   else if (role.end && role.end < role.start) out.push({ level: 'warning', text: END_BEFORE_START });
   return out;
@@ -239,6 +242,11 @@ function syncRow(v, r, role, calc) {
   r.end.title = endWarn ? END_BEFORE_START : '';
   r.end.classList.toggle('is-warning', endWarn);
   r.start.classList.toggle('is-warning', !role.start);
+  for (const d of DATES) {
+    const bad = v.f.rejected.has(fieldKey(role.id, d.field));
+    r[d.field].classList.toggle('is-error', bad);
+    if (bad) r[d.field].setAttribute('aria-invalid', 'true'); else r[d.field].removeAttribute('aria-invalid');
+  }
   r.tr.classList.toggle('has-warning', msgs.some((m) => m.level === 'warning'));
   const sig = JSON.stringify(msgs);
   if (r.msgSig !== sig) {

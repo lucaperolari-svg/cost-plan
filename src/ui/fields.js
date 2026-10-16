@@ -5,6 +5,7 @@
 // overwrite a field that has a draft or focus (sync() does that), so remote snapshots cannot clobber typing.
 // Number fields show grouped values ("16,750") when unfocused and raw ones ("16750") while editing, and
 // refuse unparseable, negative, share > 100% and ambiguous thousands/decimal text ("8,334") in non-share fields.
+// Date fields refuse a date cleared only in part (the browser reports '' with validity.badInput).
 import { parseNumber, formatShare, ambiguousNumber } from '../validate.js';
 import { h } from './dom.js';
 
@@ -36,7 +37,8 @@ const TYPES = {
     same: (cur, n) => (isBlank(cur) && n === null) || (n !== null && !isBlank(cur) && Number(cur) === n),
   },
   text: { display: str, raw: str, parse: (t) => t.trim(), blocked: () => false, same: (cur, t) => str(cur) === t },
-  date: { display: str, raw: str, parse: (t) => t || null, blocked: () => false, same: (cur, t) => (isBlank(cur) ? null : cur) === t },
+  // a date cleared only in part reads '' with validity.badInput: blocked, so it is not written as "no date"
+  date: { display: str, raw: str, parse: (t) => t || null, blocked: (t, s, input) => !!input?.validity?.badInput, same: (cur, t) => (isBlank(cur) ? null : cur) === t },
 };
 
 // The text input used for numbers in both tabs.
@@ -75,7 +77,7 @@ export function createFieldSet({ spec, value, write, readOnly, update }) {
     const { s, t } = kind(key);
     const text = fs.drafts.get(key);
     // keep the text and its error, write nothing, mark it not saved
-    if (t.blocked(text, s)) { fs.rejected.add(key); update(); return; }
+    if (t.blocked(text, s, fs.inputs.get(key))) { fs.rejected.add(key); update(); return; }
     const n = t.parse(text, s);
     fs.drafts.delete(key);
     fs.rejected.delete(key);

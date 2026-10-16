@@ -825,6 +825,7 @@ test('Read Me: headings and definitions', async () => {
   for (const term of ['CTS average', 'CTS marginal', 'Fixed/Variable', 'Buckets', 'Outside CTS', 'PODs', 'FTE']) assert.ok(text.includes(term), `term ${term}`);
   assert.ok(text.includes('End date before start date') || /end date is before the start date/i.test(text), 'Decision 1 is explained');
   assert.ok(/December/.test(text));
+  assert.ok(/active PODs show the 12-month average/.test(text), 'PODs Total column is the average');
   assert.equal(await page.$('#panel-readme .placeholder'), null);
   assert.deepEqual(page.errors, []);
   await page.close();

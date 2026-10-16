@@ -58,7 +58,7 @@ export function renderReadme(container) {
       sub('1. Derived inputs'),
       p('Card share = 1 − SEPA share. Share of calls with no human and no AI = 1 − AI share − direct human share (it must not be negative). The SEPA fee per payment = fixed fee + variable % × average payment, capped at the SEPA fee cap when a cap is set. The card fee per payment = fixed fee + variable % × average payment. The Inputs tab also shows the difference between total new customers and the year-end target; 0 means the phasing matches.'),
       sub('2. Customer base'),
-      p('Active customers each month = previous month + new customers, starting from the opening active customers. PODs = active customers × PODs per customer. In the Total column both show the December value.'),
+      p('Active customers each month = previous month + new customers, starting from the opening active customers. PODs = active customers × PODs per customer. In the Total column, active customers show the December value and active PODs show the 12-month average.'),
       sub('3. Payments'),
       p('Payments = active customers × payments per customer per month + new customers × starting payments per new customer. They split into SEPA and card by the payment mix. Commissions = payments × fee per payment. Failed payments = payments × failure rate for each method. Retry fees = SEPA failed-debit fees, plus retries per failed payment × fee per payment (SEPA and card). Stripe Billing = retried volume × its percentage; it applies to retried payments only, not to first attempts.'),
       sub('4. Customer communications'),

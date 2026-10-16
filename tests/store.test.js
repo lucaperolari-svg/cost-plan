@@ -337,3 +337,32 @@ test('store is the write boundary: bad values and indexes are rejected', async (
   await debounce();
   assert.equal(db.docs.get('plan/inputs').scalars.pricePerSms, null);
 });
+
+// --- fix round 2: lease on plan/seedLock, plan detection, missing expiresAt
+test('an empty plan/inputs-like doc does not fool the store; lease lives on plan/seedLock', async (t) => {
+  t.after(() => mock.timers.reset());
+  const db = fakeDb();
+  await db.remote('set', 'plan/inputs', {}); // e.g. left by a lease grant
+  const { store } = await make({ db });
+  assert.equal(store.getState().source, 'seed');
+  store.setScalar('aiCallShare', 0.5);
+  await debounce(); await drain(2);
+  assert.equal(db.docs.get('plan/inputs').scalars.aiCallShare, 0.5);
+  assert.equal([...db.docs.keys()].filter((p) => p.startsWith('roles/')).length, 13);
+  assert.ok(db.docs.has('plan/seedLock'));
+  assert.equal(store.getState().source, 'db');
+});
+
+test('missing expiresAt on a busy lease: fixed wait, not an instant retry loop', async (t) => {
+  t.after(() => mock.timers.reset());
+  const db = fakeDb();
+  const real = db.doc;
+  let acquires = 0;
+  db.doc = (p) => (p === 'plan/seedLock' ? { ...real(p), acquire: async () => { acquires++; return { acquired: false }; } } : real(p));
+  const { store } = await make({ db });
+  store.setScalar('aiCallShare', 0.5);
+  await debounce(); await settle();
+  assert.equal(acquires, 1); // waiting ~1 s, not burning attempts
+  mock.timers.tick(1100); await settle();
+  assert.equal(acquires, 2);
+});

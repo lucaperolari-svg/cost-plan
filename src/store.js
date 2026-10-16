@@ -37,6 +37,9 @@ export function createStore({ db, user, seed, debounceMs = 600, retryMs = () => 
     for (const fn of [...subs]) fn(state);
   };
 
+  // a plan exists only when plan/inputs has a body with scalars (a bare or empty doc does not count)
+  const isPlan = (snap) => snap.exists && !!snap.data()?.scalars && typeof snap.data().scalars === 'object';
+
   // --- writes: one global queue, so each document sees one write at a time
   const stamp = async () => {
     let by = null;
@@ -64,14 +67,14 @@ export function createStore({ db, user, seed, debounceMs = 600, retryMs = () => 
       recompute();
     });
   }
-  // Seed the empty db under a short lease on plan/inputs, so concurrent first editors cannot overwrite each other.
+  // Seed the empty db under a lease on plan/seedLock (never on plan/inputs: a granted acquire may create its doc), so concurrent first editors cannot overwrite each other.
   async function seedIfNeeded() {
     if (dbInputs || seeded) return 'exists';
     for (let attempt = 0; attempt < 5; attempt++) {
       const ref = db.doc('plan/inputs');
-      const lease = await send(() => ref.acquire({ holder, ttlMs: 5000 }));
+      const lease = await send(() => db.doc('plan/seedLock').acquire({ holder, ttlMs: 30000 }));
       if (lease.acquired) {
-        if ((await send(() => ref.get())).exists) { seeded = true; return 'exists'; }
+        if (isPlan(await send(() => ref.get()))) { seeded = true; return 'exists'; }
         const st = await stamp();
         const values = inputsFrom(...layers, pending);
         for (const r of localRoles) await send(() => db.doc(`roles/${r.id}`).set({ ...r, ...st }));
@@ -83,7 +86,8 @@ export function createStore({ db, user, seed, debounceMs = 600, retryMs = () => 
         return 'seeded';
       }
       // busy: someone else is seeding; wait for their plan to appear, or re-check after the lease expires
-      const wait = Math.max(0, Date.parse(lease.expiresAt) - Date.now()) + 50;
+      const exp = Date.parse(lease.expiresAt);
+      const wait = Number.isFinite(exp) ? Math.max(0, exp - Date.now()) + 50 : 1000;
       await new Promise((resolve) => { planWaiters.push(resolve); sleep(wait).then(resolve); });
       if (dbInputs) { seeded = true; return 'exists'; }
     }
@@ -142,7 +146,7 @@ export function createStore({ db, user, seed, debounceMs = 600, retryMs = () => 
   const unsubs = [];
   const onErr = (e) => { status = 'error'; error = e?.message || 'Database error'; if (e?.code === 'revoked') readOnly = true; recompute(); };
   if (db) {
-    unsubs.push(db.doc('plan/inputs').onSnapshot((s) => { dbInputs = s.exists ? s.data() : null; if (dbInputs) { planWaiters.forEach((w) => w()); planWaiters = []; } recompute(); }, onErr));
+    unsubs.push(db.doc('plan/inputs').onSnapshot((s) => { dbInputs = isPlan(s) ? s.data() : null; if (dbInputs) { planWaiters.forEach((w) => w()); planWaiters = []; } recompute(); }, onErr));
     unsubs.push(db.doc('plan/meta').onSnapshot((s) => { dbMeta = s.exists ? s.data() : null; recompute(); }, onErr));
     unsubs.push(db.collection('roles').onSnapshot((s) => { dbRoles = s.docs.map((d) => ({ ...strip(d.data()), id: d.id })); recompute(); }, onErr));
   }

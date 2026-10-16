@@ -76,7 +76,9 @@ export function fakeDb({ writeDelay = 0 } = {}) {
       if (l && l.expires > now && l.holder !== holder) return { acquired: false, expiresAt: new Date(l.expires).toISOString() };
       const expires = now + Math.min(Math.max(ttlMs, 1000), 600000);
       leases.set(path, { holder, expires });
-      if (data) { docs.set(path, merge(docs.get(path) || {}, data)); notify(path); }
+      if (data) docs.set(path, merge(docs.get(path) || {}, data));
+      else if (!docs.has(path)) docs.set(path, {}); // like the real one may: a granted acquire can create the leased doc
+      notify(path);
       return { acquired: true, holder, expiresAt: new Date(expires).toISOString() };
     }),
     onSnapshot: (next, error) => subscribe(docSubs, path, snap, next, error),

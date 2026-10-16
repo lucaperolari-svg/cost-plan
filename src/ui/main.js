@@ -5,12 +5,16 @@
 import inputsSeed from '../../data/inputs.json';
 import personnelSeed from '../../data/personnel.json';
 import { createStore } from '../store.js';
+import { calculate } from '../calc.js';
+import { renderSummary, destroySummary } from './summary.js';
 
 const TABS = ['summary', 'inputs', 'personnel', 'readme'];
 const TAB_KEY = 'ocp2027.tab';
 const clone = (v) => JSON.parse(JSON.stringify(v));
 const seed = () => ({ inputs: clone(inputsSeed), roles: clone(personnelSeed.roles), departments: clone(personnelSeed.departments) });
 const $ = (id) => document.getElementById(id);
+// cap on waiting for db/user/permission before showing the page as View only (tests may shorten it)
+const CONNECT_TIMEOUT_MS = Number(window.__OCP_CONNECT_TIMEOUT_MS) > 0 ? Number(window.__OCP_CONNECT_TIMEOUT_MS) : 10000;
 
 // --- store and capabilities
 const subs = new Set();
@@ -52,13 +56,20 @@ async function connect() {
   if (!c || typeof c.use !== 'function') return;
   const use = (name) => Promise.resolve().then(() => c.use(name)).catch(() => null);
   use('downloads').then((d) => { caps.downloads = d || null; renderDownload(); });
-  const [db, user] = await Promise.all([use('db'), use('user')]);
-  caps.db = db || null;
-  caps.user = user || null;
-  if (caps.db) {
-    useStore(createStore({ db: caps.db, user: caps.user, seed: seed() }));
-    try { await store.ready; } catch { /* store stays read-only */ }
-  }
+  let timer, timedOut = false;
+  const timeout = new Promise((resolve) => { timer = setTimeout(() => resolve('timeout'), CONNECT_TIMEOUT_MS); });
+  const attach = (async () => {
+    const [db, user] = await Promise.all([use('db'), use('user')]);
+    if (timedOut) return; // too late: the page stays on the seed, View only
+    caps.db = db || null;
+    caps.user = user || null;
+    if (caps.db) {
+      useStore(createStore({ db: caps.db, user: caps.user, seed: seed() }));
+      try { await store.ready; } catch { /* store stays read-only */ }
+    }
+  })();
+  if ((await Promise.race([attach.then(() => 'ok'), timeout])) === 'timeout') timedOut = true;
+  clearTimeout(timer);
   connecting = false;
   emit(store.getState());
 }
@@ -140,6 +151,12 @@ export function mountTab(name, renderFn) {
 // --- start: render from the seed now, light features up as capabilities resolve
 useStore(createStore({ db: null, user: null, seed: seed() }));
 renderDownload();
+mountTab('summary', ({ el, getState, subscribe }) => {
+  const render = (state) => renderSummary(el, calculate(state.inputs, state.roles, state.departments));
+  render(getState());
+  const unsubscribe = subscribe(render);
+  return () => { unsubscribe(); destroySummary(el); };
+});
 const hash = location.hash.slice(1), saved = tabMemory.get();
 selectTab(TABS.includes(hash) ? hash : TABS.includes(saved) ? saved : 'summary', { remember: false });
 window.__app = app;

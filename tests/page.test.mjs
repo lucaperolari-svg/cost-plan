@@ -182,3 +182,140 @@ test('375 px, light and dark: 16 px gutter, no page-level horizontal scroll', as
     await page.close();
   }
 });
+
+// --- Summary tab (Task 6)
+const summaryText = (page, sel) => page.$eval(sel, (e) => e.textContent.replace(/\s+/g, ' ').trim());
+
+test('summary: headline tiles show v5 totals, Dec CTS average and marginal, fixed share', async () => {
+  const page = await openPage();
+  await page.waitForSelector('#panel-summary .tile');
+  const tiles = await page.$$eval('#panel-summary .tile', (els) => els.map((e) => ({
+    label: e.querySelector('.tile-label').textContent.trim(),
+    value: e.querySelector('.tile-value').textContent.trim(),
+    context: e.querySelector('.tile-context')?.textContent.trim() || '',
+  })));
+  assert.equal(tiles.length, 4);
+  assert.equal(tiles[0].value, '€1,216,931');
+  assert.match(tiles[1].label, /December CTS per POD per year.*average/);
+  assert.equal(tiles[1].value, '€641.32');
+  assert.match(tiles[2].label, /marginal \(variable only\)/);
+  assert.equal(tiles[2].value, '€124.46');
+  assert.equal(tiles[3].value, '93.9%');
+  assert.match(tiles[3].context, /€1,142,807/);
+  assert.deepEqual(page.errors, []);
+  await page.close();
+});
+
+test('summary: table has 46 data rows, total row, bucket and F/V tags on line rows', async () => {
+  const page = await openPage();
+  await page.waitForSelector('#panel-summary table');
+  assert.equal(await page.$$eval('#panel-summary tbody tr[data-row]', (r) => r.length), 46);
+  assert.ok(await page.$$eval('#panel-summary tbody tr:not([data-row])', (r) => r.length) >= 10, 'section header rows');
+  const total = await page.$eval('#panel-summary tr[data-row="r47"]', (tr) => ({
+    label: tr.cells[0].textContent.trim(), last: tr.cells[tr.cells.length - 1].textContent.trim(),
+  }));
+  assert.deepEqual(total, { label: 'TOTAL OPERATIONS COST', last: '1,216,931' });
+  const lines = await page.$$eval('#panel-summary tr[data-kind="line"]', (rows) => rows.map((tr) => ({
+    row: tr.dataset.row,
+    tags: [...tr.querySelectorAll('.tag')].map((t) => t.dataset.value),
+  })));
+  assert.equal(lines.length, 24); // 4+3+6+2+4 cost lines + 5 departments
+  for (const l of lines) assert.equal(l.tags.length, 2, `${l.row} tags`);
+  assert.deepEqual(lines.find((l) => l.row === 'r06').tags, ['CTS - Operations', 'Variable']);
+  assert.deepEqual(lines.find((l) => l.row === 'r43').tags, ['Outside CTS', 'Fixed']);
+  assert.equal(await page.$$eval('#panel-summary tr[data-kind="subtotal"] .tag', (t) => t.length), 0);
+  // formats: eurPerPod 2 decimals, fte 2 decimals, count 0 decimals
+  const lastCell = (r) => page.$eval(`#panel-summary tr[data-row="${r}"]`, (tr) => tr.cells[tr.cells.length - 1].textContent.trim());
+  assert.equal(await lastCell('r69'), '1,854.40');
+  assert.equal(await lastCell('r66'), '11.75');
+  assert.equal(await lastCell('r64'), '583');
+  assert.equal(await page.$eval('#panel-summary tr[data-row="r69"]', (tr) => tr.cells[tr.cells.length - 2].textContent.trim()), '641.32');
+  // no Chart.js (CDN stubbed): no canvas, no errors
+  assert.equal(await page.$$eval('#panel-summary canvas', (c) => c.length), 0);
+  assert.deepEqual(page.errors, []);
+  await page.close();
+});
+
+test('summary at 375 px, light and dark: no page-level horizontal scroll, table scrolls in its wrapper', async () => {
+  for (const colorScheme of ['light', 'dark']) {
+    const page = await openPage({ colorScheme, viewport: { width: 375, height: 800 } });
+    await page.waitForSelector('#panel-summary table');
+    const m = await page.evaluate(() => {
+      const wrap = document.querySelector('#panel-summary .table-scroll');
+      return {
+        sw: document.documentElement.scrollWidth,
+        wrapScrolls: wrap.scrollWidth > wrap.clientWidth,
+        overflow: getComputedStyle(wrap).overflowX,
+        sticky: getComputedStyle(document.querySelector('#panel-summary tbody tr[data-row] > :first-child')).position,
+      };
+    });
+    assert.ok(m.sw <= 375, `scrollWidth ${m.sw}`);
+    assert.equal(m.overflow, 'auto');
+    assert.equal(m.wrapScrolls, true);
+    assert.equal(m.sticky, 'sticky');
+    await page.close();
+  }
+});
+
+const CHART_STUB = `window.Chart = class Chart {
+  constructor(canvas, config) {
+    this.canvas = canvas; this.config = config; this.data = config.data; this.options = config.options;
+    this.updates = 0; this.destroyed = false; (window.__charts ||= []).push(this);
+  }
+  update() { this.updates++; }
+  destroy() { this.destroyed = true; }
+};`;
+
+test('summary chart: stacked Fixed/Variable bars and Active PODs line on a second axis; re-render does not duplicate', async () => {
+  const page = await openPage({ cdn: { [CHART]: CHART_STUB }, claude: { db: true, user: { can: true, id: 'u1' } } });
+  await page.waitForFunction(() => window.__charts?.length >= 1);
+  const info = () => page.evaluate(() => {
+    const live = window.__charts.filter((c) => !c.destroyed);
+    const c = live[live.length - 1];
+    return {
+      live: live.length,
+      canvases: document.querySelectorAll('#panel-summary canvas').length,
+      inDom: document.body.contains(c.canvas),
+      sets: c.data.datasets.map((d) => ({ type: d.type, label: d.label, axis: d.yAxisID, color: d.backgroundColor ?? d.borderColor, data: d.data })),
+      stacked: [c.options.scales.x.stacked, c.options.scales.y.stacked],
+      y2: c.options.scales.y2?.position,
+    };
+  });
+  let c = await info();
+  assert.equal(c.live, 1);
+  assert.equal(c.canvases, 1);
+  assert.deepEqual(c.sets.map((s) => [s.type, s.label]), [['bar', 'Fixed'], ['bar', 'Variable'], ['line', 'Active PODs']]);
+  assert.deepEqual(c.sets.map((s) => s.color.toUpperCase()), ['#005870', '#F4C400', '#46C3B2']);
+  assert.deepEqual(c.stacked, [true, true]);
+  assert.equal(c.sets[0].axis, c.sets[1].axis);
+  assert.notEqual(c.sets[2].axis, c.sets[0].axis);
+  assert.equal(c.y2, 'right');
+  assert.equal(c.sets[2].data[11], 2000);
+  const decFixed = c.sets[0].data[11];
+  // an edit re-renders the summary: one live chart, updated in place or replaced
+  await page.waitForFunction(() => document.getElementById('badge-view-only').hidden);
+  await page.evaluate(() => window.__app.actions.setMonthly('csLicences', 11, 13));
+  await page.waitForFunction((v) => {
+    const live = window.__charts.filter((x) => !x.destroyed);
+    return live.length === 1 && live[0].data.datasets[0].data[11] !== v;
+  }, decFixed);
+  c = await info();
+  assert.equal(c.live, 1);
+  assert.equal(c.canvases, 1);
+  assert.equal(c.inDom, true);
+  assert.deepEqual(page.errors, []);
+  await page.close();
+});
+
+test('connect wait is capped: a can() that never resolves ends in View only, not Connecting…', async () => {
+  const page = await openPage({ claude: {
+    db: true, user: { can: true, id: 'u1' },
+    script: 'window.__OCP_CONNECT_TIMEOUT_MS = 300; T.user = Object.freeze({ ...T.user, can: () => new Promise(() => {}) });',
+  } });
+  await page.waitForFunction(() => document.getElementById('save-status').textContent === 'Connecting…');
+  await page.waitForFunction(() => !document.getElementById('badge-view-only').hidden, null, { timeout: 3000 });
+  assert.equal(await page.isHidden('#save-status'), true);
+  assert.equal(await page.isVisible('#panel-summary .tile'), true);
+  assert.deepEqual(page.errors, []);
+  await page.close();
+});

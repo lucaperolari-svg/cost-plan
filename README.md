@@ -1,29 +1,18 @@
-# CLAUDE.md – Operations Cost Plan 2027 artifact
+# Operations Cost Plan 2027 – handoff pack for Claude Code
 
-## What this repo is
-An interactive, shared web version of MET Retail's 2027 Operations Cost Plan, published as a claude.ai Artifact. Read in this order:
-1. `SPEC.md` – what to build, scope, acceptance criteria
-2. `CALCULATIONS.md` – every formula (source of truth together with the reference Excel)
-3. `data/inputs.json`, `data/personnel.json` – seed data from the owner's v5 Excel
-4. `tests/expected_v5.json` – golden results the engine must reproduce (±€0.01)
-5. `reference/Operations_Cost_Plan_2027_v5.xlsx` – the original model
+Copy this folder into a new repository and start Claude Code there. Then give it this prompt:
 
-## Rules
-- Do not change the calculation logic or invent inputs. If something in SPEC/CALCULATIONS is ambiguous, check the Excel formulas, then ask the owner.
-- Keep the calculation engine a pure, framework-free JS module (`src/calc.js`) with no DOM or platform calls, so it can be unit-tested in Node and inlined into the page.
-- Build step bundles everything into one self-contained HTML file (`dist/index.html`); only cdnjs scripts (exact versions) and Google Fonts may be external.
-- Test-first: write the golden test against `tests/expected_v5.json` before implementing the engine.
-- Before writing artifact runtime code (`claude.use("db" | "user" | "downloads")`), load the `artifact-capabilities` skill and follow its type definitions; before the first publish, load `artifact-design`. Apply `met-branding` if available.
-- Seed the db after the first publish (ArtifactData batch writes from `data/*.json`), never hard-code the db contents in the page beyond the fallback seed.
-- Shares are stored as fractions; show them as %.
-- The user (Luca) prefers concise answers, recommendations with reasons, and to agree changes before they are made.
+> Read CLAUDE.md, SPEC.md and CALCULATIONS.md. Propose an implementation plan, then build the Operations Cost Plan artifact test-first: the calculation engine must reproduce tests/expected_v5.json within €0.01 before any UI work. Ask me before changing scope.
 
-## Suggested layout
-```
-src/calc.js          pure engine: (inputs, roles) -> {lines, aggregates, unitEconomics}
-src/ui/*.js          tabs: summary, inputs, personnel, readme
-src/store.js         db wrapper (subscribe, debounced update, conflicts, read-only)
-src/export.js        SheetJS export
-tests/calc.test.js   golden test vs tests/expected_v5.json
-build.mjs            inline everything into dist/index.html
-```
+## Contents
+| File | Purpose |
+|---|---|
+| `CLAUDE.md` | Instructions and rules for Claude Code |
+| `SPEC.md` | Approved design: purpose, users, pages, data model, platform, acceptance criteria |
+| `CALCULATIONS.md` | Every formula, tags, aggregates, unit economics |
+| `data/inputs.json` | All inputs from the v5 Excel (43 assumptions + monthly new customers and licences) |
+| `data/personnel.json` | 5 departments and the 13 roles from the v5 Personnel sheet |
+| `tests/expected_v5.json` | Golden results: every Summary line per month + total, and each role's monthly FTE and cost |
+| `reference/Operations_Cost_Plan_2027_v5.xlsx` | The source Excel model |
+
+Key check values (v5): total 2027 €1,216,931.37 · CTS per POD per year – December €641.32 average / €124.46 marginal · full year €1,854.40 / €127.16.

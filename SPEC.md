@@ -47,7 +47,7 @@ Published as a **claude.ai Artifact**: a single self-contained HTML page (inline
 | `roles/{id}` (docs) | one doc per role: fields as in `data/personnel.json` |
 | `plan/meta` (doc) | `{departments: [5 names]}` |
 
-Writes: one field change → one `update` of `plan/inputs` (debounced ~600 ms), pinned to the version read (handle `conflict` by reloading that doc and re-applying only if the user's field still differs). Roles: add / update / delete per doc.
+Writes: one field change → one `update` of `plan/inputs` (debounced ~600 ms) that carries just that field (`{scalars: {key: value}}` merges only that key); a monthly series is written as a whole 12-month array, which replaces only that array. Last save wins on the same field, and a focused input is never overwritten by a remote change (Decision 2, agreed 16 Oct 2026; the `db` capability has no version-pinned writes). Roles: add / update / delete per doc.
 
 ## 6. Pages (tabs)
 
@@ -82,7 +82,7 @@ How to use the page, colour/interaction conventions, definitions (CTS average, C
 
 ## 7. Verification (required before handover)
 1. Unit tests for the calculation engine (pure JS module) using `data/*.json` as input and `tests/expected_v5.json` as expected output – all Summary lines, all 12 months + total, tolerance €0.01; per-role personnel cost too.
-2. Edge cases: all-zero inputs → no NaN/Infinity (CTS per POD = 0 when PODs = 0); end date before start → role cost 0; start before 2027 → hiring fee not booked in 2027.
+2. Edge cases: all-zero inputs → no NaN/Infinity (CTS per POD = 0 when PODs = 0); end date before start → no salary, but the one-off hiring fee is still booked in the start month, as in the Excel (Decision 1, agreed 16 Oct 2026); start before 2027 → hiring fee not booked in 2027.
 3. After publish: seed the db, reload, confirm Summary total = €1,216,931.37 and Dec CTS average = €641.32 / marginal = €124.46; confirm a view-level reader cannot write.
 
 ## 8. Excel export
